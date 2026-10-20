@@ -1,0 +1,29 @@
+{
+  "name": "help-desk-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Modular Node.js and Express REST API for Help Desk",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "node --test",
+    "lint": "eslint .",
+    "db:migrate": "node -r dotenv/config node_modules/node-pg-migrate/bin/node-pg-migrate.js up",
+    "db:migrate:down": "node -r dotenv/config node_modules/node-pg-migrate/bin/node-pg-migrate.js down"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "node-pg-migrate": "^9.0.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "eslint": "^10.13.0",
+    "globals": "^15.14.0",
+    "nodemon": "^3.1.9"
+  }
+}
