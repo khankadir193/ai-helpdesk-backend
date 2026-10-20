@@ -1,4 +1,4 @@
-require("dotenv").config();
+import "dotenv/config";
 
 const port = Number.parseInt(process.env.PORT || "3000", 10);
 
@@ -11,8 +11,10 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL must be set");
 }
 
-module.exports = Object.freeze({
+const env = Object.freeze({
   nodeEnv: process.env.NODE_ENV || "development",
   port,
   databaseUrl,
 });
+
+export default env;

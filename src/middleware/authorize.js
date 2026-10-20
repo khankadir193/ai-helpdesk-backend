@@ -1,4 +1,4 @@
-const ApiError = require("../utils/ApiError");
+import ApiError from "../utils/ApiError.js";
 
 function authorize(..._roles) {
   return (_req, _res, next) => {
@@ -6,4 +6,4 @@ function authorize(..._roles) {
   };
 }
 
-module.exports = authorize;
+export default authorize;

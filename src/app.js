@@ -1,6 +1,6 @@
-const express = require("express");
-const ApiError = require("./utils/ApiError");
-const errorHandler = require("./middleware/errorHandler");
+import express from "express";
+import ApiError from "./utils/ApiError.js";
+import errorHandler from "./middleware/errorHandler.js";
 
 const app = express();
 
@@ -22,4 +22,4 @@ app.use((_req, _res, next) => {
 });
 app.use(errorHandler);
 
-module.exports = app;
+export default app;

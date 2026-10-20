@@ -1,6 +1,6 @@
-const app = require("./app");
-const env = require("./config/env");
-const database = require("./config/database");
+import app from "./app.js";
+import env from "./config/env.js";
+import database from "./config/database.js";
 
 const server = app.listen(env.port, () => {
   console.log(`API listening on port ${env.port} (${env.nodeEnv})`);

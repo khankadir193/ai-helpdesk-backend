@@ -2,6 +2,7 @@
   "name": "help-desk-api",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Modular Node.js and Express REST API for Help Desk",
   "main": "src/server.js",
   "engines": {
