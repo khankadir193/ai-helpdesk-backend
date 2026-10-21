@@ -1,6 +1,7 @@
 import express from "express";
 import ApiError from "./utils/ApiError.js";
 import errorHandler from "./middleware/errorHandler.js";
+import authRouter from "./modules/auth/auth.routes.js";
 
 const app = express();
 
@@ -15,6 +16,8 @@ v1Router.get("/health", (_req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+v1Router.use("/auth", authRouter);
 
 app.use("/api/v1", v1Router);
 app.use((_req, _res, next) => {
