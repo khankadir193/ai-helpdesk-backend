@@ -45,9 +45,12 @@ async function registerUser({ name, email, password }) {
     return rows[0];
   } catch (error) {
     // PostgreSQL unique-violation error code: 23505
-    // Relying on the DB constraint means this also catches race conditions
-    // that a prior SELECT check would miss.
-    if (error.code === "23505" && error.constraint === "users_email_unique") {
+    // We match on the column name from `detail` rather than the constraint
+    // name, since the constraint may have been created with a different name
+    // (e.g. "users_email_key" vs "users_email_unique").
+    // Relying on the DB constraint also catches race conditions that a prior
+    // SELECT duplicate-check would miss.
+    if (error.code === "23505" && error.detail?.includes("(email)")) {
       throw new ApiError(409, "An account with that email already exists");
     }
 
