@@ -1,10 +1,14 @@
 import ApiError from "../utils/ApiError.js";
 
 function errorHandler(error, _req, res, _next) {
-  const apiError =
-    error instanceof ApiError
-      ? error
-      : new ApiError(500, "Internal server error");
+  let apiError;
+  if (error instanceof ApiError) {
+    apiError = error;
+  } else if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
+    apiError = new ApiError(400, "Malformed JSON in request body");
+  } else {
+    apiError = new ApiError(500, "Internal server error");
+  }
 
   if (apiError.statusCode >= 500) {
     console.error(error);
