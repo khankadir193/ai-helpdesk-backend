@@ -37,7 +37,7 @@ async function registerUser({ name, email, password }) {
   // Case-insensitive by design because emails are stored pre-normalised
   // (trimmed + lowercased) and the UNIQUE index covers lower(email).
   const { rows: existing } = await database.query(
-    "SELECT 1 FROM users WHERE email = $1",
+    "SELECT 1 FROM users WHERE lower(email) = $1",
     [normalisedEmail],
   );
 
@@ -63,9 +63,13 @@ async function registerUser({ name, email, password }) {
   } catch (error) {
     // PostgreSQL unique-violation error code: 23505
     // Safety net for the race-condition window between the pre-check SELECT
-    // and this INSERT. We match on the column name from `detail` rather than
-    // the constraint name.
-    if (error.code === "23505" && error.detail?.includes("(email)")) {
+    // and this INSERT. Matches constraint name or detail.
+    if (
+      error.code === "23505" &&
+      (error.constraint === "users_email_unique_ci" ||
+        error.detail?.includes("email") ||
+        error.constraint?.includes("email"))
+    ) {
       throw new ApiError(
         409,
         "Email already exists. Please use a different email.",
@@ -89,7 +93,7 @@ async function loginUser({ email, password }) {
   const normalisedEmail = normaliseEmail(email);
 
   const { rows } = await database.query(
-    "SELECT id, name, email, role, password_hash, is_active FROM users WHERE email = $1",
+    "SELECT id, name, email, role, password_hash, is_active FROM users WHERE lower(email) = $1",
     [normalisedEmail],
   );
 

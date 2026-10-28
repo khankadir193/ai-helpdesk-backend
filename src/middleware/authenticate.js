@@ -34,7 +34,7 @@ async function authenticate(req, _res, next) {
     }
 
     const { rows } = await database.query(
-      "SELECT id, name, email, role, is_active FROM users WHERE id = $1",
+      "SELECT id, name, email, role, is_active, created_at FROM users WHERE id = $1",
       [userId],
     );
 
@@ -57,6 +57,7 @@ async function authenticate(req, _res, next) {
       name: user.name,
       email: user.email,
       role: user.role, // Already stored as uppercase in the DB (CUSTOMER/AGENT/ADMIN)
+      created_at: user.created_at,
     };
 
     next();

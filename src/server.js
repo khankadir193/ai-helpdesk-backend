@@ -1,6 +1,7 @@
 import app from "./app.js";
 import env from "./config/env.js";
 import database from "./config/database.js";
+import { sessionPool, sessionStore } from "./config/session.js";
 
 const server = app.listen(env.port, () => {
   console.log(`API listening on port ${env.port} (${env.nodeEnv})`);
@@ -17,7 +18,13 @@ function shutdown(signal) {
 
   server.close(async (error) => {
     try {
-      await database.close();
+      if (typeof sessionStore.stopExpiringSessions === "function") {
+        sessionStore.stopExpiringSessions();
+      }
+      await Promise.allSettled([
+        database.close(),
+        sessionPool.end(),
+      ]);
       if (error) {
         console.error("HTTP server shutdown failed:", error);
         process.exitCode = 1;

@@ -328,7 +328,7 @@ describe("POST /api/v1/auth/login", () => {
     const email = uniqueEmail("deact-login");
     const hash = await bcrypt.hash("SecurePass1!", 12);
     await database.query(
-      `INSERT INTO users (name, email, password_hash, role, is_active) VALUES ($1, $2, $3, $4, $5)`,
+      "INSERT INTO users (name, email, password_hash, role, is_active) VALUES ($1, $2, $3, $4, $5)",
       ["Deact User", email, hash, "CUSTOMER", false],
     );
 

@@ -1,6 +1,7 @@
 import authService from "./auth.service.js";
 import asyncHandler from "../../utils/asyncHandler.js";
 import ApiError from "../../utils/ApiError.js";
+import env from "../../config/env.js";
 
 /**
  * POST /api/v1/auth/register
@@ -76,7 +77,9 @@ const login = asyncHandler(async (req, res) => {
  */
 const me = asyncHandler(async (req, res) => {
   // req.user is populated by the authenticate middleware
-  const user = await authService.getUserById(req.user.id);
+  const user = req.user.created_at
+    ? req.user
+    : await authService.getUserById(req.user.id);
 
   res.status(200).json({
     status: "success",
@@ -108,9 +111,10 @@ const logout = asyncHandler(async (req, res) => {
     req.session.destroy((err) => (err ? reject(new ApiError(500, "Could not end your session. Please try again.")) : resolve()));
   });
 
-  // Clear the cookie on the client side. Mirror name and path from session config.
+  // Clear the cookie on the client side. Mirror name, path, and secure from session config.
   res.clearCookie("helpdesk.sid", {
     httpOnly: true,
+    secure: env.isProduction,
     sameSite: "lax",
     path: "/",
   });

@@ -24,7 +24,15 @@ const PgSession = connectPgSimple(session);
 
 // Dedicated pool for the session store so session activity cannot interfere
 // with or exhaust the main application connection pool.
-const sessionPool = new pg.Pool({ connectionString: env.databaseUrl });
+const sessionPool = new pg.Pool({
+  connectionString: env.databaseUrl,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+});
+
+sessionPool.on("error", (error) => {
+  console.error("Unexpected session pool error:", error);
+});
 
 const sessionStore = new PgSession({
   pool: sessionPool,
@@ -51,4 +59,5 @@ const sessionMiddleware = session({
   },
 });
 
+export { sessionPool, sessionStore };
 export default sessionMiddleware;
