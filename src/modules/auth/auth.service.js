@@ -27,10 +27,6 @@ function normaliseEmail(raw) {
  *    narrow race-condition window between the pre-check SELECT and the INSERT
  *  - Return only public fields; never expose password_hash
  *
- * Note on ID gaps: the `id` column uses UUID (gen_random_uuid()), not a
- * SERIAL/IDENTITY sequence.  UUIDs are generated at insert time, so a failed
- * or rolled-back insert never consumes an ID — there are no sequence gaps.
- *
  * @param {{ name: string, email: string, password: string }} data
  * @returns {Promise<{ id: string, name: string, email: string, role: string, created_at: Date }>}
  */
@@ -39,7 +35,7 @@ async function registerUser({ name, email, password }) {
 
   // Pre-check: reject duplicate emails before paying the bcrypt cost.
   // Case-insensitive by design because emails are stored pre-normalised
-  // (trimmed + lowercased) and the UNIQUE constraint covers that column.
+  // (trimmed + lowercased) and the UNIQUE index covers lower(email).
   const { rows: existing } = await database.query(
     "SELECT 1 FROM users WHERE email = $1",
     [normalisedEmail],
@@ -67,8 +63,8 @@ async function registerUser({ name, email, password }) {
   } catch (error) {
     // PostgreSQL unique-violation error code: 23505
     // Safety net for the race-condition window between the pre-check SELECT
-    // and this INSERT.  We match on the column name from `detail` rather than
-    // the constraint name (e.g. "users_email_key" vs "users_email_unique").
+    // and this INSERT. We match on the column name from `detail` rather than
+    // the constraint name.
     if (error.code === "23505" && error.detail?.includes("(email)")) {
       throw new ApiError(
         409,
@@ -80,4 +76,72 @@ async function registerUser({ name, email, password }) {
   }
 }
 
-export default { registerUser };
+/**
+ * Authenticate a user by email and password.
+ *
+ * Deliberately uses the same generic error message for both "no such user"
+ * and "wrong password" to prevent user-enumeration attacks.
+ *
+ * @param {{ email: string, password: string }} credentials
+ * @returns {Promise<{ id: string, name: string, email: string, role: string }>}
+ */
+async function loginUser({ email, password }) {
+  const normalisedEmail = normaliseEmail(email);
+
+  const { rows } = await database.query(
+    "SELECT id, name, email, role, password_hash, is_active FROM users WHERE email = $1",
+    [normalisedEmail],
+  );
+
+  // Always compare even if user not found (prevents timing-based enumeration)
+  const DUMMY_HASH =
+    "$2b$12$invalidhashpaddingthatislong.enoughxxxxxxxxxxxxxxxxxxxxxx";
+  const candidateHash = rows[0]?.password_hash ?? DUMMY_HASH;
+  const passwordMatch = await bcrypt.compare(password, candidateHash);
+
+  if (rows.length === 0 || !passwordMatch) {
+    throw new ApiError(401, "Invalid email or password.");
+  }
+
+  const user = rows[0];
+
+  if (!user.is_active) {
+    throw new ApiError(401, "Your account has been deactivated.");
+  }
+
+  return {
+    id: String(user.id),
+    name: user.name,
+    email: user.email,
+    role: user.role,
+  };
+}
+
+/**
+ * Get the safe public profile of a user by ID.
+ * Used by the /me endpoint after session authentication.
+ *
+ * @param {string|number} userId
+ * @returns {Promise<{ id: string, name: string, email: string, role: string, created_at: Date }>}
+ */
+async function getUserById(userId) {
+  const { rows } = await database.query(
+    "SELECT id, name, email, role, created_at FROM users WHERE id = $1",
+    [userId],
+  );
+
+  if (rows.length === 0) {
+    throw new ApiError(404, "User not found.");
+  }
+
+  const user = rows[0];
+  return {
+    id: String(user.id),
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    created_at: user.created_at,
+  };
+}
+
+export default { registerUser, loginUser, getUserById };

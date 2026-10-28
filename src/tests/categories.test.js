@@ -25,11 +25,37 @@ import ticketService from "../modules/tickets/ticket.service.js";
 let server;
 let baseUrl;
 
-// Pre-created test user IDs
+// Pre-created test users (with session cookies for auth)
 let adminUser;
 let agentUser;
 let customerUser;
 let deactivatedUser;
+
+// Session cookies keyed by user role label
+let adminCookie;
+let agentCookie;
+let customerCookie;
+let deactivatedCookie;
+
+/**
+ * Login a user via POST /api/v1/auth/login and return the Set-Cookie header
+ * value. The user record must already exist in the DB with a known bcrypt hash.
+ */
+async function loginAndGetCookie(port, email, password) {
+  const res = await fetch(`http://127.0.0.1:${port}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Login failed for ${email}: ${res.status} ${text}`);
+  }
+  const setCookie = res.headers.get("set-cookie");
+  if (!setCookie) throw new Error(`No Set-Cookie header for ${email}`);
+  // Extract just the cookie name=value part (before the first ';')
+  return setCookie.split(";")[0];
+}
 
 before(async () => {
   server = app.listen(0);
@@ -37,7 +63,8 @@ before(async () => {
     server.once("listening", resolve);
     server.once("error", reject);
   });
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const port = server.address().port;
+  baseUrl = `http://127.0.0.1:${port}`;
 
   // Ensure case-insensitive unique index exists
   await database.query(
@@ -45,42 +72,57 @@ before(async () => {
   );
 
   const timestamp = Date.now();
+  // bcrypt hash of "TestPass1!" with 12 rounds — pre-computed to keep setup fast
+  // Regenerate with: node -e "require('bcrypt').hash('TestPass1!',12).then(console.log)"
+  const bcrypt = (await import("bcrypt")).default;
+  const testHash = await bcrypt.hash("TestPass1!", 12);
 
   // Create test admin user
   const adminRes = await database.query(
     `INSERT INTO users (name, email, password_hash, role, is_active)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, name, email, role, is_active`,
-    [`Admin_${timestamp}`, `admin_${timestamp}@example.com`, "hash", "ADMIN", true]
+    [`Admin_${timestamp}`, `admin_${timestamp}@example.com`, testHash, "ADMIN", true]
   );
   adminUser = adminRes.rows[0];
+  adminCookie = await loginAndGetCookie(port, adminUser.email, "TestPass1!");
 
   // Create test agent user
   const agentRes = await database.query(
     `INSERT INTO users (name, email, password_hash, role, is_active)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, name, email, role, is_active`,
-    [`Agent_${timestamp}`, `agent_${timestamp}@example.com`, "hash", "AGENT", true]
+    [`Agent_${timestamp}`, `agent_${timestamp}@example.com`, testHash, "AGENT", true]
   );
   agentUser = agentRes.rows[0];
+  agentCookie = await loginAndGetCookie(port, agentUser.email, "TestPass1!");
 
   // Create test customer user
   const customerRes = await database.query(
     `INSERT INTO users (name, email, password_hash, role, is_active)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, name, email, role, is_active`,
-    [`Customer_${timestamp}`, `customer_${timestamp}@example.com`, "hash", "CUSTOMER", true]
+    [`Customer_${timestamp}`, `customer_${timestamp}@example.com`, testHash, "CUSTOMER", true]
   );
   customerUser = customerRes.rows[0];
+  customerCookie = await loginAndGetCookie(port, customerUser.email, "TestPass1!");
 
-  // Create test deactivated user
+  // Create test deactivated user (we obtain a cookie while still active, then
+  // deactivate to test that the middleware rejects active-session + inactive-account)
   const deactivatedRes = await database.query(
     `INSERT INTO users (name, email, password_hash, role, is_active)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, name, email, role, is_active`,
-    [`Deact_${timestamp}`, `deact_${timestamp}@example.com`, "hash", "CUSTOMER", false]
+    [`Deact_${timestamp}`, `deact_${timestamp}@example.com`, testHash, "CUSTOMER", true]
   );
   deactivatedUser = deactivatedRes.rows[0];
+  // Login while still active to get a valid session cookie
+  deactivatedCookie = await loginAndGetCookie(port, deactivatedUser.email, "TestPass1!");
+  // Now deactivate the account so subsequent requests are rejected
+  await database.query(
+    "UPDATE users SET is_active = false WHERE id = $1",
+    [deactivatedUser.id]
+  );
 });
 
 after(async () => {
@@ -99,12 +141,19 @@ function uniqueCategoryName(prefix = "Cat") {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+/**
+ * Make a request with an optional session cookie for authentication.
+ *
+ * @param {string} path
+ * @param {{ method?: string, cookie?: string, headers?: object, body?: unknown }} options
+ *   cookie: raw "name=value" cookie string obtained from loginAndGetCookie().
+ */
 async function request(path, options = {}) {
-  const { method = "GET", user, headers = {}, body } = options;
+  const { method = "GET", cookie, headers = {}, body } = options;
 
   const reqHeaders = { ...headers };
-  if (user) {
-    reqHeaders["Authorization"] = `Bearer ${user.id}`;
+  if (cookie) {
+    reqHeaders["Cookie"] = cookie;
   }
   if (body !== undefined && !reqHeaders["Content-Type"]) {
     reqHeaders["Content-Type"] = "application/json";
@@ -139,7 +188,8 @@ test("unauthenticated request to categories returns 401", async () => {
 
 test("request with invalid user credentials returns 401", async () => {
   const { status, body } = await request("/api/v1/categories", {
-    headers: { Authorization: "Bearer 999999999" },
+    // Send an invalid/unknown session cookie — server should reject with 401
+    headers: { Cookie: "helpdesk.sid=s%3Ainvalid_garbage.invalid" },
   });
   assert.equal(status, 401);
   assert.equal(body.status, "error");
@@ -147,7 +197,7 @@ test("request with invalid user credentials returns 401", async () => {
 
 test("request from a deactivated user returns 401", async () => {
   const { status, body } = await request("/api/v1/categories", {
-    user: deactivatedUser,
+    cookie: deactivatedCookie,
   });
   assert.equal(status, 401);
   assert.equal(body.status, "error");
@@ -156,7 +206,7 @@ test("request from a deactivated user returns 401", async () => {
 test("customer attempting to create category returns 403", async () => {
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: customerUser,
+    cookie: customerCookie,
     body: { name: uniqueCategoryName() },
   });
   assert.equal(status, 403);
@@ -166,7 +216,7 @@ test("customer attempting to create category returns 403", async () => {
 test("agent attempting to create category returns 403", async () => {
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: agentUser,
+    cookie: agentCookie,
     body: { name: uniqueCategoryName() },
   });
   assert.equal(status, 403);
@@ -176,7 +226,7 @@ test("agent attempting to create category returns 403", async () => {
 test("server ignores client-spoofed role headers and blocks unauthorized modifications", async () => {
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: customerUser,
+    cookie: customerCookie,
     headers: {
       "x-user-role": "ADMIN",
       "role": "ADMIN",
@@ -197,7 +247,7 @@ test("admin can create category successfully with default is_active=true", async
 
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name, description },
   });
 
@@ -217,7 +267,7 @@ test("admin can create category with explicit is_active=false", async () => {
 
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name, is_active: false },
   });
 
@@ -228,7 +278,7 @@ test("admin can create category with explicit is_active=false", async () => {
 test("POST fails when required name is missing", async () => {
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { description: "Missing name" },
   });
 
@@ -240,7 +290,7 @@ test("POST fails when required name is missing", async () => {
 test("POST fails with whitespace-only name", async () => {
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: "    " },
   });
 
@@ -253,7 +303,7 @@ test("POST fails when name exceeds 80 characters", async () => {
   const longName = "A".repeat(81);
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: longName },
   });
 
@@ -266,7 +316,7 @@ test("POST fails when description exceeds 500 characters", async () => {
   const longDesc = "D".repeat(501);
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName(), description: longDesc },
   });
 
@@ -278,7 +328,7 @@ test("POST fails when description exceeds 500 characters", async () => {
 test("POST fails when is_active is not a boolean", async () => {
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName(), is_active: "true" },
   });
 
@@ -290,7 +340,7 @@ test("POST fails when is_active is not a boolean", async () => {
 test("POST fails when unknown fields are present", async () => {
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName(), unexpectedField: "hack" },
   });
 
@@ -302,7 +352,7 @@ test("POST fails when unknown fields are present", async () => {
 test("POST fails with empty request body", async () => {
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: {},
   });
 
@@ -313,7 +363,7 @@ test("POST fails with empty request body", async () => {
 test("POST fails with malformed JSON body", async () => {
   const { status, body } = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     headers: { "Content-Type": "application/json" },
     body: "{ malformed json",
   });
@@ -332,14 +382,14 @@ test("exact-case duplicate category returns 409 Conflict", async () => {
 
   const first = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name },
   });
   assert.equal(first.status, 201);
 
   const duplicate = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name },
   });
   assert.equal(duplicate.status, 409);
@@ -351,7 +401,7 @@ test("case-insensitive duplicate category returns 409 Conflict", async () => {
 
   const first = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: baseName.toLowerCase() },
   });
   assert.equal(first.status, 201);
@@ -359,7 +409,7 @@ test("case-insensitive duplicate category returns 409 Conflict", async () => {
   // Attempt duplicate in UPPERCASE
   const upper = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: baseName.toUpperCase() },
   });
   assert.equal(upper.status, 409);
@@ -368,7 +418,7 @@ test("case-insensitive duplicate category returns 409 Conflict", async () => {
   // Attempt duplicate with extra surrounding spaces
   const spaced = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: `   ${baseName.toLowerCase()}   ` },
   });
   assert.equal(spaced.status, 409);
@@ -378,9 +428,9 @@ test("concurrent duplicate category creations: only one succeeds, others return 
   const name = uniqueCategoryName("ConcurrentCat");
 
   const results = await Promise.all([
-    request("/api/v1/categories", { method: "POST", user: adminUser, body: { name: name.toLowerCase() } }),
-    request("/api/v1/categories", { method: "POST", user: adminUser, body: { name: name.toUpperCase() } }),
-    request("/api/v1/categories", { method: "POST", user: adminUser, body: { name } }),
+    request("/api/v1/categories", { method: "POST", cookie: adminCookie, body: { name: name.toLowerCase() } }),
+    request("/api/v1/categories", { method: "POST", cookie: adminCookie, body: { name: name.toUpperCase() } }),
+    request("/api/v1/categories", { method: "POST", cookie: adminCookie, body: { name } }),
   ]);
 
   const successes = results.filter((r) => r.status === 201);
@@ -401,12 +451,12 @@ test("customer and agent only see active categories on GET /", async () => {
   // Create one active and one inactive category
   const activeRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: activeName, is_active: true },
   });
   const inactiveRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: inactiveName, is_active: false },
   });
 
@@ -414,21 +464,21 @@ test("customer and agent only see active categories on GET /", async () => {
   const inactiveId = inactiveRes.body.data.category.id;
 
   // Customer listing
-  const customerList = await request("/api/v1/categories", { user: customerUser });
+  const customerList = await request("/api/v1/categories", { cookie: customerCookie });
   assert.equal(customerList.status, 200);
   const customerCatIds = customerList.body.data.categories.map((c) => String(c.id));
   assert.ok(customerCatIds.includes(String(activeId)));
   assert.ok(!customerCatIds.includes(String(inactiveId)), "Inactive category must NOT be visible to customer");
 
   // Agent listing
-  const agentList = await request("/api/v1/categories", { user: agentUser });
+  const agentList = await request("/api/v1/categories", { cookie: agentCookie });
   assert.equal(agentList.status, 200);
   const agentCatIds = agentList.body.data.categories.map((c) => String(c.id));
   assert.ok(agentCatIds.includes(String(activeId)));
   assert.ok(!agentCatIds.includes(String(inactiveId)), "Inactive category must NOT be visible to agent");
 
   // Customer passing include_inactive / is_active query params still cannot see inactive
-  const customerFiltered = await request("/api/v1/categories?is_active=false", { user: customerUser });
+  const customerFiltered = await request("/api/v1/categories?is_active=false", { cookie: customerCookie });
   assert.equal(customerFiltered.status, 200);
   const custFilteredIds = customerFiltered.body.data.categories.map((c) => String(c.id));
   assert.ok(!custFilteredIds.includes(String(inactiveId)), "Customer must never see inactive categories");
@@ -438,25 +488,25 @@ test("admin can view all categories including inactive ones on GET /", async () 
   const inactiveName = uniqueCategoryName("AdminInactiveCat");
   const inactiveRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: inactiveName, is_active: false },
   });
   const inactiveId = inactiveRes.body.data.category.id;
 
-  const adminList = await request("/api/v1/categories", { user: adminUser });
+  const adminList = await request("/api/v1/categories", { cookie: adminCookie });
   assert.equal(adminList.status, 200);
   const adminCatIds = adminList.body.data.categories.map((c) => String(c.id));
   assert.ok(adminCatIds.includes(String(inactiveId)), "Admin must be able to view inactive category");
 });
 
 test("admin can filter categories by ?is_active=true and ?is_active=false", async () => {
-  const activeRes = await request("/api/v1/categories?is_active=true", { user: adminUser });
+  const activeRes = await request("/api/v1/categories?is_active=true", { cookie: adminCookie });
   assert.equal(activeRes.status, 200);
   for (const cat of activeRes.body.data.categories) {
     assert.equal(cat.is_active, true);
   }
 
-  const inactiveRes = await request("/api/v1/categories?is_active=false", { user: adminUser });
+  const inactiveRes = await request("/api/v1/categories?is_active=false", { cookie: adminCookie });
   assert.equal(inactiveRes.status, 200);
   for (const cat of inactiveRes.body.data.categories) {
     assert.equal(cat.is_active, false);
@@ -464,7 +514,7 @@ test("admin can filter categories by ?is_active=true and ?is_active=false", asyn
 });
 
 test("GET / with invalid is_active query parameter returns 400 Bad Request", async () => {
-  const { status, body } = await request("/api/v1/categories?is_active=notabool", { user: adminUser });
+  const { status, body } = await request("/api/v1/categories?is_active=notabool", { cookie: adminCookie });
   assert.equal(status, 400);
   assert.equal(body.status, "error");
 });
@@ -476,14 +526,14 @@ test("GET / with invalid is_active query parameter returns 400 Bad Request", asy
 test("GET /:id with invalid ID format returns 400 Bad Request", async () => {
   const invalidIds = ["abc", "-5", "0", "1.5", "null", "undefined"];
   for (const id of invalidIds) {
-    const { status, body } = await request(`/api/v1/categories/${id}`, { user: customerUser });
+    const { status, body } = await request(`/api/v1/categories/${id}`, { cookie: customerCookie });
     assert.equal(status, 400, `Expected 400 for id "${id}", got ${status}`);
     assert.equal(body.status, "error");
   }
 });
 
 test("GET /:id with non-existent ID returns 404 Not Found", async () => {
-  const { status, body } = await request("/api/v1/categories/99999999", { user: adminUser });
+  const { status, body } = await request("/api/v1/categories/99999999", { cookie: adminCookie });
   assert.equal(status, 404);
   assert.equal(body.status, "error");
 });
@@ -491,16 +541,16 @@ test("GET /:id with non-existent ID returns 404 Not Found", async () => {
 test("customer and agent can retrieve active category by ID (200)", async () => {
   const createRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName("ActiveGet") },
   });
   const id = createRes.body.data.category.id;
 
-  const custRes = await request(`/api/v1/categories/${id}`, { user: customerUser });
+  const custRes = await request(`/api/v1/categories/${id}`, { cookie: customerCookie });
   assert.equal(custRes.status, 200);
   assert.equal(custRes.body.data.category.id, id);
 
-  const agentRes = await request(`/api/v1/categories/${id}`, { user: agentUser });
+  const agentRes = await request(`/api/v1/categories/${id}`, { cookie: agentCookie });
   assert.equal(agentRes.status, 200);
   assert.equal(agentRes.body.data.category.id, id);
 });
@@ -508,23 +558,23 @@ test("customer and agent can retrieve active category by ID (200)", async () => 
 test("inactive category returns 404 for customer and agent, but 200 for admin", async () => {
   const createRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName("InactiveGet"), is_active: false },
   });
   const id = createRes.body.data.category.id;
 
   // Customer receives 404
-  const custRes = await request(`/api/v1/categories/${id}`, { user: customerUser });
+  const custRes = await request(`/api/v1/categories/${id}`, { cookie: customerCookie });
   assert.equal(custRes.status, 404);
   assert.equal(custRes.body.status, "error");
 
   // Agent receives 404
-  const agentRes = await request(`/api/v1/categories/${id}`, { user: agentUser });
+  const agentRes = await request(`/api/v1/categories/${id}`, { cookie: agentCookie });
   assert.equal(agentRes.status, 404);
   assert.equal(agentRes.body.status, "error");
 
   // Admin receives 200
-  const adminRes = await request(`/api/v1/categories/${id}`, { user: adminUser });
+  const adminRes = await request(`/api/v1/categories/${id}`, { cookie: adminCookie });
   assert.equal(adminRes.status, 200);
   assert.equal(adminRes.body.data.category.id, id);
   assert.equal(adminRes.body.data.category.is_active, false);
@@ -537,21 +587,21 @@ test("inactive category returns 404 for customer and agent, but 200 for admin", 
 test("customer and agent cannot PATCH category (403)", async () => {
   const createRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName("PatchAuth") },
   });
   const id = createRes.body.data.category.id;
 
   const custRes = await request(`/api/v1/categories/${id}`, {
     method: "PATCH",
-    user: customerUser,
+    cookie: customerCookie,
     body: { name: "Updated" },
   });
   assert.equal(custRes.status, 403);
 
   const agentRes = await request(`/api/v1/categories/${id}`, {
     method: "PATCH",
-    user: agentUser,
+    cookie: agentCookie,
     body: { name: "Updated" },
   });
   assert.equal(agentRes.status, 403);
@@ -560,7 +610,7 @@ test("customer and agent cannot PATCH category (403)", async () => {
 test("admin can update category name, description, and status with updated_at refreshed", async () => {
   const createRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName("OrigName"), description: "Orig Desc" },
   });
   const id = createRes.body.data.category.id;
@@ -572,7 +622,7 @@ test("admin can update category name, description, and status with updated_at re
   const newName = uniqueCategoryName("NewName");
   const updateRes = await request(`/api/v1/categories/${id}`, {
     method: "PATCH",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: newName, description: "New Desc", is_active: false },
   });
 
@@ -588,14 +638,14 @@ test("PATCH category fails when updating to an existing category name (409)", as
   const name1 = uniqueCategoryName("NameA");
   const name2 = uniqueCategoryName("NameB");
 
-  await request("/api/v1/categories", { method: "POST", user: adminUser, body: { name: name1 } });
-  const cat2 = await request("/api/v1/categories", { method: "POST", user: adminUser, body: { name: name2 } });
+  await request("/api/v1/categories", { method: "POST", cookie: adminCookie, body: { name: name1 } });
+  const cat2 = await request("/api/v1/categories", { method: "POST", cookie: adminCookie, body: { name: name2 } });
   const id2 = cat2.body.data.category.id;
 
   // Attempt to update cat2 to name1 (case-insensitive)
   const dupRes = await request(`/api/v1/categories/${id2}`, {
     method: "PATCH",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: name1.toUpperCase() },
   });
   assert.equal(dupRes.status, 409);
@@ -604,14 +654,14 @@ test("PATCH category fails when updating to an existing category name (409)", as
 test("PATCH category fails with empty update body (422)", async () => {
   const createRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName("EmptyPatch") },
   });
   const id = createRes.body.data.category.id;
 
   const { status, body } = await request(`/api/v1/categories/${id}`, {
     method: "PATCH",
-    user: adminUser,
+    cookie: adminCookie,
     body: {},
   });
   assert.equal(status, 422);
@@ -621,14 +671,14 @@ test("PATCH category fails with empty update body (422)", async () => {
 test("PATCH category fails with unknown fields (422)", async () => {
   const createRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName("UnknownPatch") },
   });
   const id = createRes.body.data.category.id;
 
   const { status, body } = await request(`/api/v1/categories/${id}`, {
     method: "PATCH",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: "ValidName", extraField: "not_allowed" },
   });
   assert.equal(status, 422);
@@ -638,7 +688,7 @@ test("PATCH category fails with unknown fields (422)", async () => {
 test("PATCH category on non-existent ID returns 404", async () => {
   const { status } = await request("/api/v1/categories/99999999", {
     method: "PATCH",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: "NonExistent" },
   });
   assert.equal(status, 404);
@@ -651,7 +701,7 @@ test("PATCH category on non-existent ID returns 404", async () => {
 test("admin can deactivate and re-activate a category via /:id/status", async () => {
   const createRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName("StatusToggle"), is_active: true },
   });
   const id = createRes.body.data.category.id;
@@ -659,7 +709,7 @@ test("admin can deactivate and re-activate a category via /:id/status", async ()
   // Deactivate
   const deactRes = await request(`/api/v1/categories/${id}/status`, {
     method: "PATCH",
-    user: adminUser,
+    cookie: adminCookie,
     body: { is_active: false },
   });
   assert.equal(deactRes.status, 200);
@@ -668,7 +718,7 @@ test("admin can deactivate and re-activate a category via /:id/status", async ()
   // Activate
   const actRes = await request(`/api/v1/categories/${id}/status`, {
     method: "PATCH",
-    user: adminUser,
+    cookie: adminCookie,
     body: { is_active: true },
   });
   assert.equal(actRes.status, 200);
@@ -678,7 +728,7 @@ test("admin can deactivate and re-activate a category via /:id/status", async ()
 test("PATCH /:id/status fails with missing or invalid is_active (422)", async () => {
   const createRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName("StatusInvalid") },
   });
   const id = createRes.body.data.category.id;
@@ -686,7 +736,7 @@ test("PATCH /:id/status fails with missing or invalid is_active (422)", async ()
   // Missing
   const missingRes = await request(`/api/v1/categories/${id}/status`, {
     method: "PATCH",
-    user: adminUser,
+    cookie: adminCookie,
     body: {},
   });
   assert.equal(missingRes.status, 422);
@@ -694,7 +744,7 @@ test("PATCH /:id/status fails with missing or invalid is_active (422)", async ()
   // Non-boolean
   const stringRes = await request(`/api/v1/categories/${id}/status`, {
     method: "PATCH",
-    user: adminUser,
+    cookie: adminCookie,
     body: { is_active: "false" },
   });
   assert.equal(stringRes.status, 422);
@@ -708,7 +758,7 @@ test("existing tickets retain deactivated category reference without breaking hi
   // 1. Admin creates active category
   const catRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName("TicketHistCat") },
   });
   const categoryId = catRes.body.data.category.id;
@@ -726,7 +776,7 @@ test("existing tickets retain deactivated category reference without breaking hi
   // 3. Admin deactivates category
   const deactRes = await request(`/api/v1/categories/${categoryId}/status`, {
     method: "PATCH",
-    user: adminUser,
+    cookie: adminCookie,
     body: { is_active: false },
   });
   assert.equal(deactRes.status, 200);
@@ -742,7 +792,7 @@ test("creating a new ticket with an inactive category is rejected", async () => 
   // Create an inactive category
   const catRes = await request("/api/v1/categories", {
     method: "POST",
-    user: adminUser,
+    cookie: adminCookie,
     body: { name: uniqueCategoryName("InactiveTicketCat"), is_active: false },
   });
   const categoryId = catRes.body.data.category.id;
@@ -792,7 +842,7 @@ test("database query failure returns 500 Internal Server Error with consistent f
   };
 
   try {
-    const { status, body } = await request("/api/v1/categories/1", { user: customerUser });
+    const { status, body } = await request("/api/v1/categories/1", { cookie: customerCookie });
     assert.equal(status, 500);
     assert.equal(body.status, "error");
     assert.equal(body.message, "Internal server error");

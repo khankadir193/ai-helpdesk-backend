@@ -11,10 +11,25 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL must be set");
 }
 
+const nodeEnv = process.env.NODE_ENV || "development";
+const isProduction = nodeEnv === "production";
+
+const sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
+  throw new Error("SESSION_SECRET must be set");
+}
+if (isProduction && sessionSecret.length < 32) {
+  throw new Error(
+    "SESSION_SECRET must be at least 32 characters in production",
+  );
+}
+
 const env = Object.freeze({
-  nodeEnv: process.env.NODE_ENV || "development",
+  nodeEnv,
+  isProduction,
   port,
   databaseUrl,
+  sessionSecret,
 });
 
 export default env;
