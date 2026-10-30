@@ -27,7 +27,6 @@ const PgSession = connectPgSimple(session);
 const sessionPool = new pg.Pool({
   connectionString: env.databaseUrl,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
 });
 
 sessionPool.on("error", (error) => {

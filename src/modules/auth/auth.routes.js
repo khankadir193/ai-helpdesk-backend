@@ -1,5 +1,5 @@
 import express from "express";
-import { rateLimit } from "express-rate-limit";
+import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import validate from "../../middleware/validate.js";
 import authenticate from "../../middleware/authenticate.js";
 import authController from "./auth.controller.js";
@@ -32,6 +32,16 @@ const authRateLimit = rateLimit({
   limit: isProduction ? 10 : 1000,
   standardHeaders: "draft-8",
   legacyHeaders: false,
+  keyGenerator: (req) => {
+    // Robust IP/session-based key resolution:
+    // Ensures a non-empty string is always returned, avoiding Hash.update(undefined)
+    // inside setDraft8Headers -> getPartitionKey.
+    const clientIp = req.ip || req.socket?.remoteAddress || "127.0.0.1";
+    const normalizedIp = ipKeyGenerator(clientIp);
+    return req.session?.userId
+      ? `${normalizedIp}_user_${req.session.userId}`
+      : normalizedIp;
+  },
   message: {
     status: "error",
     message:

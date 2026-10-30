@@ -12,11 +12,10 @@ const app = express();
 
 // ---------------------------------------------------------------------------
 // Trust proxy
-// Uncomment and set to the appropriate number of proxy hops if this server
-// sits behind a reverse proxy (e.g. Nginx, AWS ALB, Railway, Render).
+// Sits behind a reverse proxy (e.g. Vite dev proxy, Nginx, AWS ALB, Railway, Render).
 // Required for req.ip to reflect the real client IP with rate limiting.
 // ---------------------------------------------------------------------------
-// app.set("trust proxy", 1);
+app.set("trust proxy", 1);
 
 // ---------------------------------------------------------------------------
 // Security headers (helmet sets sensible defaults)
