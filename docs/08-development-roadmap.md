@@ -43,7 +43,7 @@ The following is already done and does not need to be repeated:
 
 ## Phase 1 — Verify Existing Implementation
 
-**Status:** Mostly complete. One item needs resolution.
+**Status:** Complete. The migration situation was resolved: the never-applied legacy `users` migration (`1729522800000_create-users-table.js`, conflicting uuid/enum schema) was removed, and `1792999534510_initial-schema.sql` — verified to exactly match the live database — is recorded in `pgmigrations`.
 
 ### Objective
 Confirm that what exists works correctly and that there are no hidden issues before building on top of it.
@@ -75,7 +75,7 @@ Confirm that what exists works correctly and that there are no hidden issues bef
 
 ## Phase 2 — Ticket Creation and Retrieval
 
-**Status:** Planned. The `ticket.service.js` has a `createTicket` function and the schema exists.
+**Status:** Complete. Implemented in `src/modules/tickets/` with role scoping, validation, and `TICKET_CREATED` history rows; verified by `src/tests/tickets.test.js`.
 
 ### Objective
 Allow customers to create tickets and view their own tickets. Allow agents and admins to view tickets relevant to them.
@@ -118,7 +118,7 @@ A customer can create a ticket via the API and retrieve it. An agent cannot crea
 
 ## Phase 3 — Ticket Status, Assignment, and History
 
-**Status:** Planned.
+**Status:** Complete. `/status` (transition matrix + timestamps), `/assignment` (admin-only), and `/history` endpoints with `SELECT ... FOR UPDATE` transactional updates and history rows are implemented and verified by `src/tests/tickets.test.js`.
 
 ### Objective
 Allow agents to update ticket status. Allow admins to assign tickets. Record all changes in `ticket_history`.
@@ -157,7 +157,7 @@ An agent can change a ticket's status. An admin can assign a ticket. All changes
 
 ## Phase 4 — Comments
 
-**Status:** Planned.
+**Status:** Complete. `comment.service.js` filters internal comments for customers and validates access per role; `comment.routes.js` is mounted under `/api/v1/tickets` in `app.js`. Verified by `src/tests/comments.test.js`.
 
 ### Objective
 Allow customers and agents to communicate on a ticket through comments.

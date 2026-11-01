@@ -163,25 +163,62 @@ All of the above, plus:
 
 ## Tests Still to Be Written
 
-### Tickets (`src/tests/tickets.test.js`) — Planned
+### Tickets (`src/tests/tickets.test.js`) — **Implemented**
 
-| Scenario | Expected Result |
-|---|---|
-| Customer creates ticket with valid data | `201 Created` |
-| Customer creates ticket with inactive category | `400 Bad Request` |
-| Customer creates ticket with non-existent category | `404 Not Found` |
-| Customer creates ticket with missing title | `422` |
-| Agent creating ticket | `403 Forbidden` |
-| Customer lists own tickets | `200`, only own tickets |
-| Customer retrieves their own ticket by ID | `200` |
-| Customer retrieves another customer's ticket by ID | `403` or `404` |
-| Admin retrieves any ticket | `200` |
-| Agent updates ticket status | `200`, history recorded |
-| Agent updates status to `RESOLVED` | `resolved_at` is set |
-| Customer updates ticket status | `403 Forbidden` |
-| Admin assigns ticket to agent | `200`, history recorded |
-| Admin assigns ticket to a non-agent user | `400` or `422` |
-| Retrieve ticket history | `200` for agent/admin; `403` for customer |
+Covers the full `/api/v1/tickets` module (67 tests):
+
+**Authentication and role gates:**
+- Unauthenticated requests to ticket endpoints return `401`.
+- Agents and admins cannot create tickets (`403`, reservation for customers).
+
+**Creation:**
+- Valid creation with category and priority returns `201` with the full ticket shape.
+- Defaults applied when category/priority omitted (`OPEN` / `MEDIUM` / no category).
+- `TICKET_CREATED` history row is recorded.
+- Client-supplied `customer_id` is rejected as an unknown field (`422`) — ownership always comes from the session.
+- Non-existent category → `404`; inactive or malformed category → `400`; invalid priority → `422`.
+- Missing/blank/oversized title, missing/blank description, unknown fields, empty body → `422`; malformed JSON → `400`.
+
+**Ownership scoping:**
+- Customer sees own ticket (`200`) and gets `403` on another customer's ticket.
+- Unassigned agents get `403` on any ticket; admin always `200`; missing → `404`; malformed id → `400`.
+
+**Ticket edits (PATCH):**
+- Customer edits own ticket while `OPEN` (`200`), moves category between active categories, clears category via `null`, and is blocked from inactive (`400`) / non-existent (`404`) categories.
+- Customer loses edit rights once the ticket leaves `OPEN` (`403`).
+- Agents can set `priority`/`category` on assigned tickets; `title` and `description` edits are `403`.
+- Admin can edit any non-closed ticket.
+- No-op PATCH (same values) returns `200` and writes no history rows.
+- Empty body, unknown `status`/`assigned_agent_id` fields, blank description → `422`.
+
+**Assignment:**
+- Agents/customers get `403`; admin assigns, reassigns, and unassigns (`200`).
+- Assignment target must exist (`404`), be an AGENT (`400`), and be active (`400`).
+- Body validation (`422`) and malformed ids (`400`).
+- Reassignment transfers visibility (previous agent `403`, new agent `200`).
+
+**Status transitions:**
+- Customers get `403`; unassigned agents get `403`; unknown values → `422`.
+- Full lifecycle (`OPEN → IN_PROGRESS → RESOLVED → OPEN → RESOLVED → CLOSED`) stamps `resolved_at` / `closed_at` per the transition rules; `RESOLVED → OPEN` clears `resolved_at`; `RESOLVED → CLOSED` keeps the original timestamp.
+- Same-status and unknown transitions → `409`; `OPEN → CLOSED` works directly and satisfies the DB consistency CHECK.
+- `CLOSED` tickets are terminal: any status change, edit, or reassignment is `409`; customers keep read access.
+
+**Category deactivation preservation:**
+- Deactivating a category keeps existing tickets readable, including the inactive category reference and admin filtering by it.
+
+**List, filter, sort, pagination:**
+- Customers see only their own tickets; agents only assigned; admin everything.
+- `status`, `priority`, `category_id` filters work; invalid values `400`.
+- `assigned_agent_id` filter is admin-only (`403` for others) and combines with other filters.
+- Sorting whitelist (`created_at` / `updated_at`, asc/desc) with deterministic ordering; invalid values `400`.
+- Pagination slices without overlap and reports accurate totals; invalid `page`/`limit` → `400`.
+
+**History:**
+- Assigned agents read history with all actions (`TICKET_CREATED`, `STATUS_CHANGED`, `ASSIGNED`, `PRIORITY_CHANGED`).
+- Unassigned agents and customers get `403`; admin reads anything; missing tickets `404`; malformed ids `400`.
+
+**Database errors:**
+- Simulated database failure returns `500` with the consistent error envelope for list and detail endpoints.
 
 ### Comments (`src/tests/comments.test.js`) — Planned
 

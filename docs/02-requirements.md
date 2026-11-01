@@ -24,11 +24,11 @@ Requirements are grouped by user role and use identifiers in the format `FR-NNN`
 | FR-006 | A customer can log out, which destroys the server-side session | Must have | **Implemented** |
 | FR-007 | A logged-in customer can retrieve their own profile (`/api/v1/auth/me`) | Must have | **Implemented** |
 | FR-008 | A customer can view only the active ticket categories when creating a ticket | Must have | **Implemented** |
-| FR-009 | A customer can create a support ticket with a title, description, optional category, and optional priority | Must have | **Planned** |
-| FR-010 | A customer can view a list of their own tickets only | Must have | **Planned** |
-| FR-011 | A customer can view the full details and current status of one of their own tickets | Must have | **Planned** |
-| FR-012 | A customer can add a comment (reply) to one of their own tickets | Must have | **Planned** |
-| FR-013 | A customer cannot view another customer's ticket, even by guessing a ticket ID | Must have | **Planned** |
+| FR-009 | A customer can create a support ticket with a title, description, optional category, and optional priority | Must have | **Implemented** |
+| FR-010 | A customer can view a list of their own tickets only | Must have | **Implemented** |
+| FR-011 | A customer can view the full details and current status of one of their own tickets | Must have | **Implemented** |
+| FR-012 | A customer can add a comment (reply) to one of their own tickets | Must have | **Implemented** |
+| FR-013 | A customer cannot view another customer's ticket, even by guessing a ticket ID | Must have | **Implemented** |
 | FR-014 | A customer can view AI-generated suggestions attached to their ticket where the suggestion is not marked internal | Should have | **Planned** |
 
 ---
@@ -38,15 +38,15 @@ Requirements are grouped by user role and use identifiers in the format `FR-NNN`
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
 | FR-020 | An agent can log in and log out using the same authentication flow as a customer | Must have | **Implemented** |
-| FR-021 | An agent can view a list of tickets assigned to them | Must have | **Planned** |
-| FR-022 | An agent can view the full details and comment history of an assigned ticket | Must have | **Planned** |
-| FR-023 | An agent can post a comment (response) on an assigned ticket | Must have | **Planned** |
-| FR-024 | An agent can update the status of a ticket (e.g., from `OPEN` to `IN_PROGRESS`) | Must have | **Planned** |
+| FR-021 | An agent can view a list of tickets assigned to them | Must have | **Implemented** |
+| FR-022 | An agent can view the full details and comment history of an assigned ticket | Must have | **Implemented** |
+| FR-023 | An agent can post a comment (response) on an assigned ticket | Must have | **Implemented** |
+| FR-024 | An agent can update the status of a ticket (e.g., from `OPEN` to `IN_PROGRESS`) | Must have | **Implemented** |
 | FR-025 | An agent can view only active ticket categories | Must have | **Implemented** |
 | FR-026 | An agent can view AI-generated suggestions on an assigned ticket | Should have | **Planned** |
 | FR-027 | An agent cannot create, update, or delete categories | Must have | **Implemented** |
-| FR-028 | An agent cannot access tickets not assigned to them | Must have | **Planned** |
-| FR-029 | An agent can mark a ticket as resolved | Must have | **Planned** |
+| FR-028 | An agent cannot access tickets not assigned to them | Must have | **Implemented** |
+| FR-029 | An agent can mark a ticket as resolved | Must have | **Implemented** |
 
 ---
 
@@ -59,11 +59,11 @@ Requirements are grouped by user role and use identifiers in the format `FR-NNN`
 | FR-042 | An admin can view all categories, including inactive ones | Must have | **Implemented** |
 | FR-043 | An admin can update a category's name, description, or active status | Must have | **Implemented** |
 | FR-044 | An admin can activate or deactivate a category | Must have | **Implemented** |
-| FR-045 | An admin can view all tickets regardless of status or assignment | Must have | **Planned** |
-| FR-046 | An admin can assign or reassign a ticket to an agent | Must have | **Planned** |
+| FR-045 | An admin can view all tickets regardless of status or assignment | Must have | **Implemented** |
+| FR-046 | An admin can assign or reassign a ticket to an agent | Must have | **Implemented** |
 | FR-047 | An admin can change a user's role | Should have | **Planned** |
 | FR-048 | An admin can deactivate a user account | Should have | **Planned** |
-| FR-049 | An admin can view the ticket history audit log | Should have | **Planned** |
+| FR-049 | An admin can view the ticket history audit log | Should have | **Implemented** |
 | FR-050 | An admin can view a dashboard summary of ticket counts by status | Should have | **Planned** |
 
 ---
@@ -113,9 +113,9 @@ Acceptance criteria describe what must be true for a requirement to be considere
 - A customer or agent attempting to create a category returns `403 Forbidden`.
 - An unauthenticated request returns `401 Unauthorized`.
 
-### FR-013 — Ticket Ownership Isolation *(Planned)*
+### FR-013 — Ticket Ownership Isolation *(Implemented)*
 
-- A customer who requests `GET /api/v1/tickets/:id` for a ticket they do not own receives `403 Forbidden` or `404 Not Found`.
+- A customer who requests `GET /api/v1/tickets/:id` for a ticket they do not own receives `403 Forbidden`.
 - Changing the ID in the URL does not grant access to another customer's ticket.
 - This must be enforced in the backend, not only in the frontend.
 
@@ -160,7 +160,7 @@ Non-functional requirements define quality standards that apply across the whole
 |---|---|---|
 | NFR-P01 | A `pg.Pool` is used to reuse database connections instead of opening a new connection per request | **Implemented** |
 | NFR-P02 | A dedicated connection pool is used for the session store to avoid interference with the main pool | **Implemented** |
-| NFR-P03 | Additional indexes on `tickets` (by customer, status, and agent) are designed and planned | **Planned** |
+| NFR-P03 | Additional indexes on `tickets` (by customer, status, and agent) are designed and planned | **Implemented** (applied via `migrations/1793584000000_add-tickets-performance-indexes.js`) |
 
 ### Reliability and Error Handling
 

@@ -407,11 +407,11 @@ erDiagram
 
 ## Planned Improvements
 
-The following database changes are designed but not yet implemented:
+The following database changes are designed and implemented:
 
 ### Performance Indexes
 
-The schema does not yet include the following indexes. They should be added in a future migration when ticket listing and filtering endpoints are implemented.
+Now **applied** via [`migrations/1793584000000_add-tickets-performance-indexes.js`](../migrations/1793584000000_add-tickets-performance-indexes.js) (`npm run db:migrate`). Migration bookkeeping: the `pgmigrations` table was empty because the initial schema was applied before node-pg-migrate was in use. The initial schema was verified to match the live database exactly and is now recorded in `pgmigrations`; the never-applied legacy `users` migration (conflicting uuid/enum schema) was removed so `npm run db:migrate` is usable and idempotent.
 
 ```sql
 -- Customer's tickets, newest first

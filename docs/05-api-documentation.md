@@ -408,25 +408,29 @@ Activate or deactivate a category.
 
 ---
 
-## Module: Tickets — **Planned**
+## Module: Tickets — **Implemented**
 
-The ticket routes file exists but has no routes implemented. The ticket service has a `createTicket` function (used in tests) but no route wires it to an HTTP endpoint.
+Ticket endpoints are implemented in `src/modules/tickets/` and mounted at `/api/v1/tickets` in `app.js`. All endpoints require a valid session. Ownership scoping is enforced in the service layer and is never derived from client input: the authenticated user comes from `authenticate`, which loads the current role from the database.
 
-> [!WARNING]
-> All ticket endpoints below are **Planned**. No HTTP endpoints exist yet.
+**Role scoping used by every endpoint:**
 
-### `POST /api/v1/tickets` — **Planned**
+| Term | CUSTOMER | AGENT | ADMIN |
+|---|---|---|---|
+| Own | `customer_id = self` | `assigned_agent_id = self` (assigned tickets only) | every ticket |
+| Manage | create / edit own ticket while `OPEN` | view + edit priority/category of assigned tickets; transition status of assigned tickets | everything except mutating `CLOSED` tickets |
 
-Create a new ticket. The authenticated user becomes the customer.
+Error codes used along the way: `400` bad id/query values, `401` no/invalid session, `403` role or ownership denial, `404` missing ticket/category/agent (and 403-by-design analogues), `409` CLOSED-state conflicts and invalid transitions, `422` body validation, `500` unexpected errors.
 
-**Required role:** `CUSTOMER`
+### `POST /api/v1/tickets`
+
+Create a new ticket. **Required role:** `CUSTOMER` (agents/admins get `403`; the creator becomes the ticket owner automatically).
 
 **Request body:**
 
 ```json
 {
-  "title": "Cannot reset my password",
-  "description": "The password reset email is not arriving.",
+  "title": "Cannot sign in with SSO",
+  "description": "The single sign-on redirect fails with error 500.",
   "category_id": 1,
   "priority": "HIGH"
 }
@@ -434,74 +438,263 @@ Create a new ticket. The authenticated user becomes the customer.
 
 | Field | Rules |
 |---|---|
-| `title` | Required. 1–200 characters. |
-| `description` | Required. Non-blank. |
-| `category_id` | Optional. Must reference an **active** category. |
-| `priority` | Optional. One of `LOW`, `MEDIUM`, `HIGH`, `URGENT`. Defaults to `MEDIUM`. |
+| `title` | Required. 1–200 characters, not blank. |
+| `description` | Required, not blank (trimmed). |
+| `category_id` | Optional. Positive integer referencing an **active** category. `404` unknown, `400` inactive/malformed. |
+| `priority` | Optional. `LOW` \| `MEDIUM` \| `HIGH` \| `URGENT`. Defaults to `MEDIUM`. Anything else is `422`. |
 
-**Success:** `201 Created` with the ticket object.
+Unknown fields (including `status`, `assigned_agent_id`, `customer_id`) are rejected with `422`.
 
----
+**Success — `201 Created`:**
 
-### `GET /api/v1/tickets` — **Planned**
+```json
+{
+  "status": "success",
+  "data": {
+    "ticket": {
+      "id": "209",
+      "title": "Cannot sign in with SSO",
+      "description": "The single sign-on redirect fails with error 500.",
+      "priority": "HIGH",
+      "status": "OPEN",
+      "customer_id": "42",
+      "assigned_agent_id": null,
+      "category_id": "1",
+      "customer": { "id": "42", "name": "Maya Patel", "email": "maya@example.com" },
+      "assigned_agent": null,
+      "category": { "id": "1", "name": "Login & Account", "is_active": true },
+      "resolved_at": null,
+      "closed_at": null,
+      "created_at": "2026-11-01T10:00:00.000Z",
+      "updated_at": "2026-11-01T10:00:00.000Z"
+    }
+  }
+}
+```
 
-List tickets. Visibility depends on role:
+> [!IMPORTANT]
+> Every creation writes a `TICKET_CREATED` row to `ticket_history` in the same transaction.
+
+**Error responses:** `401`, `403`, `404` (category missing), `400` (category inactive or malformed), `422`, `400` malformed JSON.
+
+### `GET /api/v1/tickets`
+
+List tickets, scoped by role:
+
 - `CUSTOMER` — own tickets only
-- `AGENT` — tickets assigned to them
+- `AGENT` — tickets assigned to them only
 - `ADMIN` — all tickets
 
-Planned filters: `status`, `priority`, `category_id`, `assigned_agent_id`.
+**Query parameters:**
+
+| Parameter | Type | Rules |
+|---|---|---|
+| `status` | string | `OPEN` \| `IN_PROGRESS` \| `RESOLVED` \| `CLOSED`; anything else `400`. |
+| `priority` | string | `LOW` \| `MEDIUM` \| `HIGH` \| `URGENT`; anything else `400`. |
+| `category_id` | int | Positive integer; anything else `400`. |
+| `assigned_agent_id` | int | **ADMIN only.** Agents and customers get `403`. |
+| `sort` | string | `created_at` (default) or `updated_at`; anything else `400`. |
+| `order` | string | `asc` or `desc` (default); anything else `400`. |
+| `page` | int | Default `1`; `< 1` or non-integer `400`. |
+| `limit` | int | Default `20`, max `100`; outside range `400`. |
+
+**Success — `200 OK`:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "tickets": [ { "...same shape as detail, minus order guarantees": true } ],
+    "pagination": { "page": 1, "limit": 20, "total_items": 42, "total_pages": 3 }
+  }
+}
+```
+
+### `GET /api/v1/tickets/:id`
+
+Retrieve one ticket.
+
+**Authorization:** customers see only their own tickets (`403` otherwise), agents only assigned ones (`403`), admins everything. Unknown or malformed id → `404` / `400`.
+
+**Success — `200 OK`:** `{ status: "success", data: { ticket } }` (shape shown under POST).
+
+### `PATCH /api/v1/tickets/:id`
+
+Edit details. At least one field required; an empty body is `422`.
+
+| Caller | Allowed fields | State rules |
+|---|---|---|
+| CUSTOMER | `title`, `description`, `category_id`, `priority` | own ticket **and** `status = OPEN`; otherwise `403` |
+| AGENT | `category_id`, `priority` | assigned tickets; `403` otherwise; `403` for `title`/`description` |
+| ADMIN | all fields | any non-CLOSED ticket |
+
+`category_id: null` clears the category; a value must reference an **active** category (`400` inactive, `404` unknown). Mutating a CLOSED ticket → `409`. Every actual change appends a row to `ticket_history` (`TITLE_CHANGED`, `DESCRIPTION_CHANGED`, `CATEGORY_CHANGED`, `PRIORITY_CHANGED`); unchanged values produce no history rows and return `200`.
+
+Unknown fields (`status`, `assigned_agent_id`) → `422` pointing at the dedicated endpoints.
+
+### `PATCH /api/v1/tickets/:id/status`
+
+**Required role:** `AGENT` (assigned tickets only) or `ADMIN` (any non-closed ticket); customers get `403`.
+
+**Request body:**
+
+```json
+{ "status": "IN_PROGRESS" }
+```
+
+**Transition matrix** (`409` on every violation, including `OPEN → OPEN`):
+
+| From | Allowed to |
+|---|---|
+| `OPEN` | `IN_PROGRESS`, `RESOLVED`, `CLOSED` |
+| `IN_PROGRESS` | `OPEN`, `RESOLVED`, `CLOSED` |
+| `RESOLVED` | `OPEN`, `IN_PROGRESS`, `CLOSED` |
+| `CLOSED` | *(terminal — always `409`)* |
+
+Timestamps: entering `RESOLVED` sets `resolved_at`; entering `CLOSED` sets `closed_at` (and fills `resolved_at` if it was still NULL, satisfying the DB CHECK); leaving `RESOLVED`/`CLOSED` to an active status clears both. Each change writes a `STATUS_CHANGED` history row.
+
+### `PATCH /api/v1/tickets/:id/assignment`
+
+Assign/reassign/unassign an agent. **Required role:** `ADMIN` (`403` otherwise).
+
+**Request body:**
+
+```json
+{ "assigned_agent_id": 12 }
+```
+
+- `{ "assigned_agent_id": null }` unassigns.
+- Target must exist (`404`), have the `AGENT` role (`400` otherwise) and be active (`400` if deactivated).
+- CLOSED tickets are rejected with `409`.
+- Assigning the same agent is an idempotent no-op that returns `200` without a history row; real changes write `ASSIGNED` rows.
+
+**Success — `200 OK`:** `{ status: "success", data: { ticket } }` with `assigned_agent` populated.
+
+### `GET /api/v1/tickets/:id/history`
+
+Audit trail, newest first. **Required role:** `AGENT` (assigned tickets) or `ADMIN`. Customers always get `403`.
+
+**Success — `200 OK`:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "history": [
+      {
+        "id": "37",
+        "action": "STATUS_CHANGED",
+        "field_name": "status",
+        "old_value": "IN_PROGRESS",
+        "new_value": "RESOLVED",
+        "changed_by": { "id": "60", "name": "Agent_1793..." },
+        "created_at": "2026-10-27T19:12:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+*Next up (separate modules, not implemented here): users management and AI endpoints — see below.*
 
 ---
 
-### `GET /api/v1/tickets/:id` — **Planned**
+## Module: Ticket Comments — **Implemented**
 
-Get a single ticket with its full details.
+Comment endpoints are implemented in `src/modules/comments/` and mounted at `/api/v1/tickets/:id/comments`. All endpoints require a valid session.
 
-**Authorization rule:** A customer who requests a ticket they do not own receives `403 Forbidden` or `404 Not Found`.
+**Access scoping (same rules as ticket access):**
+
+| Role | Can view / post comments on |
+|---|---|
+| CUSTOMER | own tickets only (`403` otherwise) |
+| AGENT | tickets assigned to them only (`403` otherwise) |
+| ADMIN | every ticket |
+
+Internal comments (`is_internal: true`) are never returned in a customer's comment list. Posting a comment is not a ticket-state change: there is **no** status restriction (e.g., a customer may still comment on a `CLOSED` ticket).
+
+### `GET /api/v1/tickets/:id/comments`
+
+List the comment thread of a ticket, oldest first.
+
+**Authentication required:** Yes  
+**Path parameter:** `id` — positive integer (`400` otherwise)
+
+**Success — `200 OK`:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "comments": [
+      {
+        "id": "5",
+        "ticket_id": "209",
+        "author_id": "42",
+        "author": { "id": "42", "name": "Maya Patel" },
+        "message": "The redirect also fails on my second laptop.",
+        "is_internal": false,
+        "created_at": "2026-11-01T12:00:00.000Z",
+        "updated_at": "2026-11-01T12:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | `id` is not a positive integer |
+| `401 Unauthorized` | No session |
+| `403 Forbidden` | Ticket is not accessible to the caller |
+| `404 Not Found` | Ticket does not exist |
 
 ---
 
-### `PATCH /api/v1/tickets/:id/status` — **Planned**
+### `POST /api/v1/tickets/:id/comments`
 
-Update ticket status. Sets `resolved_at` when status becomes `RESOLVED` and `closed_at` when status becomes `CLOSED`. Records the change in `ticket_history`.
+Append a comment to a ticket. The author is always the authenticated user; `author_id` cannot be supplied by the client (unknown field → `422`).
 
-**Required role:** `AGENT` or `ADMIN`
+**Authentication required:** Yes  
+**Required role:** CUSTOMER (own ticket), AGENT (assigned ticket), or ADMIN (any ticket)
 
----
+**Request body:**
 
-### `PATCH /api/v1/tickets/:id/assignment` — **Planned**
-
-Assign or reassign a ticket to an agent. Records the change in `ticket_history`.
-
-**Required role:** `ADMIN`
-
----
-
-### `GET /api/v1/tickets/:id/history` — **Planned**
-
-Return the audit history for a ticket.
-
-**Required role:** `AGENT` or `ADMIN` (customers do not see internal history entries).
-
----
-
-## Module: Ticket Comments — **Planned**
-
-### `GET /api/v1/tickets/:id/comments` — **Planned**
-
-List all comments on a ticket. Internal comments (`is_internal: true`) are filtered out for customers.
-
----
-
-### `POST /api/v1/tickets/:id/comments` — **Planned**
-
-Add a comment to a ticket.
+```json
+{
+  "message": "Could you try signing in again?",
+  "is_internal": false
+}
+```
 
 | Field | Rules |
 |---|---|
-| `message` | Required. Non-blank. |
-| `is_internal` | Optional boolean. Customers may not set `true`. |
+| `message` | Required. Non-blank after trimming; surrounding whitespace is trimmed before storage. |
+| `is_internal` | Optional boolean. Defaults to `false`. `true` from a CUSTOMER returns `403 Forbidden` and nothing is stored. |
+
+**Success — `201 Created`:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "comment": {
+      "id": "6",
+      "ticket_id": "209",
+      "author_id": "60",
+      "author": { "id": "60", "name": "Agent One" },
+      "message": "Could you try signing in again?",
+      "is_internal": false,
+      "created_at": "2026-11-01T12:05:00.000Z",
+      "updated_at": "2026-11-01T12:05:00.000Z"
+    }
+  }
+}
+```
+
+**Error responses:** `400` (bad id or malformed JSON), `401`, `403` (no access, or customer attempting an internal comment), `404` (missing ticket), `422` (body validation).
 
 ---
 

@@ -42,6 +42,16 @@ function validate(schema, options = {}) {
       return next(err);
     }
 
+    // Check for unknown fields if rejectUnknown is enabled
+    if (options.rejectUnknown) {
+      const allowedFields = new Set(Object.keys(schema));
+      for (const key of Object.keys(body)) {
+        if (!allowedFields.has(key)) {
+          errors.push({ field: key, message: `Unknown field: ${key}` });
+        }
+      }
+    }
+
     // Check requireAtLeastOneOf
     if (
       Array.isArray(options.requireAtLeastOneOf) &&
@@ -53,6 +63,7 @@ function validate(schema, options = {}) {
       if (!hasAny) {
         const err = new ApiError(422, "Validation failed");
         err.errors = [
+          ...errors,
           {
             field: "_body",
             message: `At least one of [${options.requireAtLeastOneOf.join(
@@ -61,16 +72,6 @@ function validate(schema, options = {}) {
           },
         ];
         return next(err);
-      }
-    }
-
-    // Check for unknown fields if rejectUnknown is enabled
-    if (options.rejectUnknown) {
-      const allowedFields = new Set(Object.keys(schema));
-      for (const key of Object.keys(body)) {
-        if (!allowedFields.has(key)) {
-          errors.push({ field: key, message: `Unknown field: ${key}` });
-        }
       }
     }
 

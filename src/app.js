@@ -7,6 +7,8 @@ import ApiError from "./utils/ApiError.js";
 import errorHandler from "./middleware/errorHandler.js";
 import authRouter from "./modules/auth/auth.routes.js";
 import categoryRouter from "./modules/categories/category.routes.js";
+import ticketRouter from "./modules/tickets/ticket.routes.js";
+import commentRouter from "./modules/comments/comment.routes.js";
 
 const app = express();
 
@@ -81,6 +83,8 @@ v1Router.get("/health", (_req, res) => {
 
 v1Router.use("/auth", authRouter);
 v1Router.use("/categories", categoryRouter);
+v1Router.use("/tickets", ticketRouter);
+v1Router.use("/tickets", commentRouter);
 
 app.use("/api/v1", v1Router);
 
