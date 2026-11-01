@@ -66,11 +66,6 @@ before(async () => {
   const port = server.address().port;
   baseUrl = `http://127.0.0.1:${port}`;
 
-  // Ensure case-insensitive unique index exists
-  await database.query(
-    "CREATE UNIQUE INDEX IF NOT EXISTS categories_name_unique_ci ON categories (LOWER(name))"
-  );
-
   const timestamp = Date.now();
   // bcrypt hash of "TestPass1!" with 12 rounds — pre-computed to keep setup fast
   // Regenerate with: node -e "require('bcrypt').hash('TestPass1!',12).then(console.log)"

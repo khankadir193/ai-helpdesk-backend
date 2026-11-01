@@ -115,7 +115,7 @@ CREATE TABLE categories (
 | `updated_at` | `TIMESTAMPTZ` | Updated by the application on every change. |
 
 **Important decisions:**
-- Case-insensitive uniqueness is enforced at the **application layer** (the service performs `LOWER(name) = LOWER($1)` checks before inserting or updating). A case-insensitive unique index is also created by the category integration test setup as a safety net.
+- Case-insensitive uniqueness is enforced at the **database level** by the functional unique index `categories_name_unique_ci` on `LOWER(name)` (applied via [`migrations/1793585000000_add-categories-name-ci-unique-index.js`](../migrations/1793585000000_add-categories-name-ci-unique-index.js)), with matching `LOWER(name) = LOWER($1)` service pre-checks that return the friendlier `409` conflict response.
 - Deactivating a category does not break existing tickets — `tickets.category_id` retains the reference, and the application enforces that only active categories can be used for **new** ticket creation.
 
 ---
@@ -434,6 +434,12 @@ CREATE INDEX idx_ticket_history_ticket_created ON ticket_history (ticket_id, cre
 
 -- AI suggestions for a ticket
 CREATE INDEX idx_ai_suggestions_ticket_created ON ai_suggestions (ticket_id, created_at DESC);
+```
+
+Case-insensitive category name uniqueness is also enforced as a functional unique index, applied via [`migrations/1793585000000_add-categories-name-ci-unique-index.js`](../migrations/1793585000000_add-categories-name-ci-unique-index.js):
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS categories_name_unique_ci ON categories (LOWER(name));
 ```
 
 ### `updated_at` Triggers

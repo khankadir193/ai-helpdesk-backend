@@ -2,8 +2,8 @@ import ApiError from "../utils/ApiError.js";
 
 /**
  * Express middleware factory that validates `req.body` against a plain-object
- * schema and attaches the validated (and possibly coerced) value back onto
- * `req.body`.
+ * schema. Values are left exactly as received — trimming/normalization is the
+ * responsibility of the service layer (e.g. title/description/name/email).
  *
  * Schema shape:
  *   {

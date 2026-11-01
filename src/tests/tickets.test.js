@@ -86,11 +86,6 @@ before(async () => {
   const port = server.address().port;
   baseUrl = `http://127.0.0.1:${port}`;
 
-  // Ensure case-insensitive unique category index exists (matches other suites)
-  await database.query(
-    "CREATE UNIQUE INDEX IF NOT EXISTS categories_name_unique_ci ON categories (LOWER(name))",
-  );
-
   const timestamp = Date.now();
   const bcrypt = (await import("bcrypt")).default;
   const testHash = await bcrypt.hash("TestPass1!", 12);
@@ -1225,10 +1220,13 @@ test("admin list includes every ticket", async () => {
   for (const id of [ticket01.id, ticket02.id, ticket03.id, ticket04.id, ticket06.id]) {
     assert.ok(ids.includes(String(id)), `Admin must see ticket ${id}`);
   }
+  // The shared test database accumulates rows across runs, so the page can
+  // legitimately hold fewer tickets than the total; the invariant is "one page
+  // holds everything whenever the total is within the 100-item cap".
   assert.equal(
-    list.body.data.pagination.total_items,
     list.body.data.tickets.length,
-    "limit=100 must return everything in one page",
+    Math.min(100, list.body.data.pagination.total_items),
+    "limit=100 must return as many tickets as exist, capped at 100",
   );
 });
 

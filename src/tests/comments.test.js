@@ -73,11 +73,6 @@ before(async () => {
   const port = server.address().port;
   baseUrl = `http://127.0.0.1:${port}`;
 
-  // Ensure case-insensitive unique category index exists (matches other suites)
-  await database.query(
-    "CREATE UNIQUE INDEX IF NOT EXISTS categories_name_unique_ci ON categories (LOWER(name))",
-  );
-
   const timestamp = Date.now();
   const bcrypt = (await import("bcrypt")).default;
   const testHash = await bcrypt.hash("TestPass1!", 12);
