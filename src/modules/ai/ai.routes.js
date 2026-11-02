@@ -64,4 +64,16 @@ router.post(
   aiController.generateReplyDraft,
 );
 
+// POST /:id/ai/summary - AI conversation summary for support agents (AGENT
+// assigned / ADMIN, ownership scoping enforced in the service). Summary only:
+// the suggestion is stored as pending; the ticket's status, priority, and
+// category are never modified automatically and no comment is created.
+router.post(
+  "/:id/ai/summary",
+  aiRateLimit,
+  authorize("AGENT", "ADMIN"),
+  validateTicketId,
+  aiController.generateSummary,
+);
+
 export default router;

@@ -10,19 +10,27 @@ import { TICKET_PRIORITIES } from "../tickets/ticket.validation.js";
 const CLASSIFICATION_SUGGESTION_TYPE = "CLASSIFICATION";
 const PRIORITY_SUGGESTION_TYPE = "PRIORITY";
 const REPLY_DRAFT_SUGGESTION_TYPE = "REPLY_DRAFT";
+const SUMMARY_SUGGESTION_TYPE = "SUMMARY";
 const CLASSIFICATION_PROVIDER = "groq";
 const PRIORITY_PROVIDER = "groq";
 const REPLY_DRAFT_PROVIDER = "groq";
+const SUMMARY_PROVIDER = "groq";
 
 /** Cap sent/parsed free text so prompts and stored results stay bounded. */
 const MAX_DESCRIPTION_LENGTH = 4000;
 const MAX_REASON_LENGTH = 1000;
 
-// Reply-draft bounds: prompts and stored drafts stay bounded and the
-// customer-visible conversation never contains internal comments.
+// Reply-draft and summary bounds: prompts and stored results stay bounded
+// and the customer-visible conversation never contains internal comments.
 const MAX_DRAFT_LENGTH = 4000;
 const MAX_CONVERSATION_COMMENTS = 20;
 const MAX_CONVERSATION_LENGTH = 6000;
+
+// Summary bounds: each generated part and each list item is capped so a
+// stored summary result stays bounded no matter how verbose the model is.
+const MAX_SUMMARY_TEXT_LENGTH = 2000;
+const MAX_SUMMARY_ITEM_LENGTH = 500;
+const MAX_SUMMARY_ITEMS = 12;
 
 /**
  * Classification suggestions below this confidence level are still returned
@@ -372,6 +380,196 @@ function validateReplyDraftResponse(content) {
 }
 
 /**
+ * Build the messages sent to the AI provider for an internal conversation
+ * summary. Context mirrors the reply draft: ticket title/description,
+ * metadata the agent already sees (category name, priority, status), and the
+ * customer-visible comment thread from
+ * commentService.listCustomerVisibleComments (internal notes are never
+ * included — docs/07). No customer identity data is sent.
+ *
+ * The prompt explicitly separates known facts (given ticket fields and
+ * performed actions visible in the conversation) from unknown information
+ * and forbids invented solutions or completed troubleshooting steps.
+ * The model returns ONLY the {"mainIssue"| "details" | "troubleshootingDone"
+ * | "currentStatus" | "nextSteps"} JSON object.
+ *
+ * @param {{ title: string, description: string, categoryName: string|null,
+ *           priority: string, status: string }} ticket
+ * @param {Array<{ message: string, author_role: string }>} comments
+ * @returns {{ system: string, user: string }}
+ */
+function buildSummaryMessages(ticket, comments) {
+  const description = String(ticket.description ?? "")
+    .trim()
+    .slice(0, MAX_DESCRIPTION_LENGTH);
+
+  const system =
+    "You are a support ticket summarizer for a help desk. Your summary is " +
+    "read by support agents to understand a ticket without reading every " +
+    "comment. " +
+    "Rules for the summary: " +
+    "- Base the summary ONLY on the ticket information and the conversation " +
+    "provided. Never invent solutions, reasons, timelines, refunds, or " +
+    "facts. " +
+    "- currentStatus must state the ticket's current status using the exact " +
+    "status value provided below, plus a short statement of where the issue " +
+    "currently stands. " +
+    "- troubleshootingDone must list only steps the conversation shows were " +
+    "ACTUALLY performed by the customer or support. If none are shown, " +
+    "return an empty array. Never invent completed actions or steps. " +
+    "- If information is missing or unknown, leave it out of details and " +
+    "nextSteps instead of guessing; unknown things are never claimed as " +
+    "completed. " +
+    "- Keep it concise, plain text, no markdown headings: mainIssue at most " +
+    "2 sentences; each list item at most 40 words; at most 8 items per " +
+    "list; currentStatus at most 2 sentences; at most 8 nextSteps items. " +
+    "Respond ONLY with a JSON object and nothing else, using exactly this " +
+    "shape: {\"mainIssue\": \"<the customer's main issue in one or two " +
+    "sentences>\", " +
+    "\"details\": [\"<important detail>\", \"...\"], " +
+    "\"troubleshootingDone\": [\"<a step that was actually performed>\", " +
+    "\"...\"], " +
+    "\"currentStatus\": \"<the current status value and where the issue " +
+    "stands>\", " +
+    "\"nextSteps\": [\"<a pending action or next step>\", \"...\"]}. " +
+    "Every value must be a string or an array of strings. Never write " +
+    "anything outside the JSON object.";
+
+  const lines = [
+    "Ticket title:",
+    ticket.title,
+    "",
+    "Ticket description:",
+    description,
+    "",
+    `Ticket category: ${ticket.categoryName ?? "not assigned"}`,
+    `Ticket priority: ${ticket.priority}`,
+    `Ticket status: ${ticket.status}`,
+    "",
+  ];
+
+  if (comments.length === 0) {
+    lines.push(
+      "Conversation: (no comments yet; summarize the issue from the ticket details above)",
+    );
+  } else {
+    // Same trimming strategy as the reply draft: keep the most recent
+    // MAX_CONVERSATION_COMMENTS messages and spend the total character
+    // budget from the newest message backwards so an oversized thread
+    // truncates its oldest turns. The kept turns are emitted in
+    // chronological order.
+    const turns = [];
+    let budget = MAX_CONVERSATION_LENGTH;
+    for (const comment of [...comments.slice(-MAX_CONVERSATION_COMMENTS)].reverse()) {
+      if (budget <= 0) break;
+      const message = String(comment.message ?? "").slice(0, budget);
+      budget -= message.length;
+      const role =
+        comment.author_role === "CUSTOMER" ? "Customer" : "Support agent";
+      turns.push({ role, message });
+    }
+    turns.reverse();
+    lines.push("Conversation (oldest first):");
+    lines.push(...turns.map((turn) => `${turn.role}: ${turn.message}`));
+  }
+
+  return { system, user: lines.join("\n") };
+}
+
+/**
+ * Parse and strictly validate the raw AI summary response.
+ * AI output is untrusted input (docs/07): every field is type-checked,
+ * trimmed, and length-capped. mainIssue and each list item must be
+ * non-empty strings after trimming; list fields (details,
+ * troubleshootingDone, nextSteps) must be arrays. Returns the validated
+ * summary or throws 502 so nothing invalid is ever stored.
+ *
+ * @param {string} content
+ * @returns {{ result: object }}
+ */
+function validateSummaryResponse(content) {
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new ApiError(502, "AI returned a non-JSON summary response.");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ApiError(502, "AI returned an invalid summary response.");
+  }
+
+  /**
+   * Validate one string field (trimmed, capped, non-empty).
+   *
+   * @param {string} name
+   * @param {unknown} value
+   * @returns {string}
+   */
+  function requireText(name, value) {
+    if (typeof value !== "string") {
+      throw new ApiError(502, `AI returned an invalid ${name}. Must be a string.`);
+    }
+    const text = value.trim().slice(0, MAX_SUMMARY_TEXT_LENGTH);
+    if (!text) {
+      throw new ApiError(502, `AI returned an empty ${name}.`);
+    }
+    return text;
+  }
+
+  /**
+   * Validate one array field (strings only, each non-empty after trimming
+   * and length-capped; the whole array is capped at MAX_SUMMARY_ITEMS).
+   *
+   * @param {string} name
+   * @param {unknown} value
+   * @returns {string[]}
+   */
+  function requireTextList(name, value) {
+    if (!Array.isArray(value)) {
+      throw new ApiError(
+        502,
+        `AI returned an invalid ${name}. Must be an array of strings.`,
+      );
+    }
+    return value.slice(0, MAX_SUMMARY_ITEMS).map((item) => {
+      if (typeof item !== "string") {
+        throw new ApiError(
+          502,
+          `AI returned an invalid ${name}. Every item must be a string.`,
+        );
+      }
+      const text = item.trim().slice(0, MAX_SUMMARY_ITEM_LENGTH);
+      if (!text) {
+        throw new ApiError(
+          502,
+          `AI returned an empty item in ${name}. Items must be non-empty strings.`,
+        );
+      }
+      return text;
+    });
+  }
+
+  const mainIssue = requireText("mainIssue", parsed.mainIssue);
+  const details = requireTextList("details", parsed.details);
+  const troubleshootingDone = requireTextList(
+    "troubleshootingDone",
+    parsed.troubleshootingDone,
+  );
+  const currentStatus = requireText("currentStatus", parsed.currentStatus);
+  const nextSteps = requireTextList("nextSteps", parsed.nextSteps);
+
+  return {
+    result: {
+      mainIssue,
+      details,
+      troubleshootingDone,
+      currentStatus,
+      nextSteps,
+    },
+  };
+}
+
+/**
  * Classify a ticket with an AI provider and store the suggestion.
  *
  * Authorization: AGENT (assigned tickets only) or ADMIN (all). The ticket,
@@ -587,10 +785,94 @@ async function generateReplyDraft(ticketId, user) {
   return serializeSuggestion(rows[0]);
 }
 
+/**
+ * Generate an internal conversation summary for support agents (SUMMARY).
+ *
+ * Authorization and ticket resolution are identical to classifyTicket:
+ * AGENT (assigned tickets only) or ADMIN (all). The summary is generated
+ * ONLY (docs/07): it is stored in ai_suggestions with status PENDING and it
+ * never modifies the ticket — status, priority, category, and assignment
+ * are untouched, and no comment is created automatically.
+ *
+ * @param {string|number} ticketId — validated positive integer (route level)
+ * @param {{ id: string|number, role: string }} user
+ * @returns {Promise<object>} the stored suggestion (API shape)
+ */
+async function generateSummary(ticketId, user) {
+  const row = await ticketRepository.findTicketById(ticketId);
+
+  if (!row) {
+    throw new ApiError(404, "Ticket not found.");
+  }
+  if (!ticketService.canAccessTicket(user, row)) {
+    throw new ApiError(
+      403,
+      "Forbidden. You are not authorized to access this ticket.",
+    );
+  }
+
+  // Guard against empty input (docs/07 — AI input is untrusted too), same
+  // blank-row protection as the priority suggestion and reply draft.
+  const title = String(row.title ?? "").trim();
+  const description = String(row.description ?? "").trim();
+  if (!title || !description) {
+    throw new ApiError(
+      422,
+      "Ticket title and description are required for a conversation summary.",
+    );
+  }
+
+  // Customer-visible conversation only (internal notes excluded); bounded
+  // by buildSummaryMessages. A ticket without comments is summarized from
+  // the ticket details alone.
+  const comments = await commentService.listCustomerVisibleComments(row.id);
+
+  const messages = buildSummaryMessages(
+    {
+      title,
+      description,
+      categoryName: row.category_name ?? null,
+      priority: row.priority,
+      status: row.status,
+    },
+    comments,
+  );
+
+  const { content, model } = await aiProvider.generateCompletion({
+    ...messages,
+    operation: "conversation summary request",
+  });
+  const summary = validateSummaryResponse(content);
+
+  const { rows } = await database.query(
+    `INSERT INTO ai_suggestions
+       (ticket_id, requested_by, suggestion_type, result, provider, model_name, status)
+     VALUES ($1, $2, $3, $4, $5, $6, 'PENDING')
+     RETURNING id, ticket_id, suggestion_type, result, provider, model_name,
+               status, created_at`,
+    [
+      String(row.id),
+      user.id,
+      SUMMARY_SUGGESTION_TYPE,
+      JSON.stringify({
+        ...summary.result,
+        // Known fact from the ticket row — not AI output — so consumers can
+        // compare the model's currentStatus narrative against the real value.
+        ticketStatus: row.status,
+      }),
+      SUMMARY_PROVIDER,
+      model,
+    ],
+  );
+
+  return serializeSuggestion(rows[0]);
+}
+
 export default {
   classifyTicket,
   suggestTicketPriority,
   generateReplyDraft,
+  generateSummary,
   serializeSuggestion,
   // Exported for targeted tests of the pure validation logic.
   validateClassificationResponse,
@@ -599,4 +881,6 @@ export default {
   buildPriorityMessages,
   validateReplyDraftResponse,
   buildReplyDraftMessages,
+  validateSummaryResponse,
+  buildSummaryMessages,
 };

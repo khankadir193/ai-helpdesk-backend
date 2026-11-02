@@ -72,8 +72,34 @@ const generateReplyDraft = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * POST /api/v1/tickets/:id/ai/summary — AGENT (assigned) or ADMIN.
+ *
+ * No request body is required; the ticket content, the customer-visible
+ * comment thread, and the requesting user all come from the server side.
+ * The summary is generated ONLY: it is stored in ai_suggestions with
+ * suggestion_type SUMMARY and status PENDING. It never modifies the
+ * ticket — status, priority, category, and assignment are untouched — and
+ * no comment is created automatically.
+ *
+ * Response 200:
+ *   { status: "success", data: { suggestion: {...} } }
+ */
+const generateSummary = asyncHandler(async (req, res) => {
+  const suggestion = await aiService.generateSummary(
+    req.params.id,
+    req.user,
+  );
+
+  res.status(200).json({
+    status: "success",
+    data: { suggestion },
+  });
+});
+
 export default {
   classifyTicket,
   suggestPriority,
   generateReplyDraft,
+  generateSummary,
 };

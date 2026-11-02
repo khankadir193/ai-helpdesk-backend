@@ -7,19 +7,21 @@ This document explains how AI fits into the support workflow, why AI features ar
 ## Current State
 
 > [!IMPORTANT]
-> Ticket classification, priority suggestion, and reply drafts are
-> **Implemented** with the Groq provider (`groq-sdk`):
+> Ticket classification, priority suggestion, reply drafts, and conversation
+> summaries are **Implemented** with the Groq provider (`groq-sdk`):
 > `POST /api/v1/tickets/:id/ai/classify`,
-> `POST /api/v1/tickets/:id/ai/priority`, and
-> `POST /api/v1/tickets/:id/ai/reply-draft` — AGENT (assigned tickets) or
+> `POST /api/v1/tickets/:id/ai/priority`,
+> `POST /api/v1/tickets/:id/ai/reply-draft`, and
+> `POST /api/v1/tickets/:id/ai/summary` — AGENT (assigned tickets) or
 > ADMIN, responses validated server-side, suggestions stored in
 > `ai_suggestions` with status `PENDING` (types `CLASSIFICATION`,
-> `PRIORITY`, and `REPLY_DRAFT`). Reply drafts are draft-only: they are
-> never sent automatically and never become ticket comments until an agent
-> explicitly posts them. Groq is configured through backend environment
-> variables (`GROQ_API_KEY`, `GROQ_MODEL`, optional `GROQ_TIMEOUT_MS`); the
-> key is never sent to the browser. Conversation summaries (`SUMMARY`)
-> remain **Planned**, as does the suggestion review endpoint. The
+> `PRIORITY`, `REPLY_DRAFT`, and `SUMMARY`). Reply drafts are draft-only:
+> they are never sent automatically and never become ticket comments until
+> an agent explicitly posts them. Summaries are summary-only: they never
+> modify the ticket and never create comments automatically. Groq is
+> configured through backend environment variables (`GROQ_API_KEY`,
+> `GROQ_MODEL`, optional `GROQ_TIMEOUT_MS`); the key is never sent to the
+> browser. The suggestion review endpoint remains **Planned**. The
 > `ai_suggestions` database table is fully designed and created.
 
 ---
@@ -46,12 +48,7 @@ In all cases, a human agent sees the AI suggestion, decides whether it is correc
 | Ticket classification | `CLASSIFICATION` | Given a ticket's title and description, suggest a category and optionally a priority (✅ implemented) |
 | Priority suggestion | `PRIORITY` | Given a ticket's title and description, suggest exactly one priority level (`LOW`, `MEDIUM`, `HIGH`, `URGENT`) (✅ implemented) |
 | Reply draft | `REPLY_DRAFT` | Given the ticket conversation, suggest a response the agent can review and edit (✅ implemented, draft-only: never sent and never posted automatically) |
-
-### Future Features
-
-| Feature | Suggestion Type | Description |
-|---|---|---|
-| Conversation summary | `SUMMARY` | Summarize the full comment thread of a long ticket |
+| Conversation summary | `SUMMARY` | Summarize the full comment thread of a long ticket (✅ implemented, summary-only: never modifies the ticket and never creates comments) |
 
 ---
 

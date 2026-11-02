@@ -804,11 +804,49 @@ Request a reply draft for the ticket conversation.
 
 ---
 
-### `POST /api/v1/tickets/:id/ai-summary` — **Planned**
+### `POST /api/v1/tickets/:id/ai/summary` — **Implemented**
 
-Request a conversation summary.
+Request an AI conversation summary for support agents. No request body is
+required: the ticket details, the customer-visible comment thread (internal
+notes are never sent), and the requesting user all come from the server side.
 
-**Required role:** `AGENT` or `ADMIN`
+**Required role:** `AGENT` (assigned tickets) or `ADMIN`
+
+**Success — `200 OK`:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "suggestion": {
+      "id": "14",
+      "ticket_id": "12",
+      "suggestion_type": "SUMMARY",
+      "provider": "groq",
+      "model_name": "llama-3.3-70b-versatile",
+      "status": "PENDING",
+      "result": {
+        "mainIssue": "The customer cannot reset their password because the emailed reset link expires immediately.",
+        "details": ["The link expires right after opening it."],
+        "troubleshootingDone": ["The customer opened the link in two different browsers."],
+        "currentStatus": "OPEN: waiting for a review of the reset-link expiry configuration.",
+        "nextSteps": ["Review the reset-link token expiry setting."],
+        "ticketStatus": "OPEN"
+      },
+      "created_at": "2026-11-02T12:40:00.000Z"
+    }
+  }
+}
+```
+
+`result` contains five AI-generated parts (main issue, important details,
+troubleshooting already performed, current status, next steps) plus
+`ticketStatus`, which is copied from the ticket row as the authoritative
+current status (not AI output). `troubleshootingDone` lists only steps the
+conversation shows were actually performed; unknown or missing steps are
+omitted, never invented.
+
+**Errors:** `401` unauthenticated, `403` not allowed/accessible, `404` unknown ticket, `400` invalid ticket id, `422` blank ticket title/description, `429` provider rate limited, `502` invalid provider response, `503` provider not configured, `504` provider timeout. Invalid provider responses never store a suggestion. The ticket is never modified and no comment is created.
 
 ---
 
