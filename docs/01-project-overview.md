@@ -112,7 +112,7 @@ The first usable version (Minimum Viable Product) includes:
 | Ticket history recording | **Planned** |
 | AI suggestion (classification, reply draft, summary) | **Planned** |
 | User management for admins | **Planned** |
-| Dashboard summary endpoint | **Planned** |
+| Dashboard summary endpoint | **Implemented** (`GET /api/v1/dashboard`) |
 | React frontend | **Planned** |
 
 ---

@@ -673,6 +673,7 @@ async function getTicketHistory(id, user) {
 }
 
 export default {
+  serializeTicket,
   validateTicketCategory,
   canAccessTicket,
   createTicket,

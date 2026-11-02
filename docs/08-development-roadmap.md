@@ -255,7 +255,7 @@ Phases 2 and 3 complete (tickets must exist). A configured AI provider API key.
 
 ## Phase 7 — Dashboard
 
-**Status:** Planned.
+**Status:** Implemented as `GET /api/v1/dashboard` (role-based, all roles).
 
 ### Objective
 Provide agents and admins with a summary of ticket counts by status.
@@ -269,7 +269,9 @@ Phases 2 and 3 complete.
    - Query ticket counts grouped by `status`.
    - Optionally include counts by `priority` or `category`.
 2. Implement `dashboard.controller.js` and `dashboard.routes.js`:
-   - `GET /api/v1/dashboard/summary` (agent and admin)
+   - `GET /api/v1/dashboard` — role-based (ADMIN: every-ticket aggregates,
+     category counts, agent workload; AGENT: assigned tickets;
+     CUSTOMER: own tickets), with paginated recent tickets.
 3. Wire into `app.js`.
 4. Write tests.
 

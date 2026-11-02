@@ -10,6 +10,7 @@ import categoryRouter from "./modules/categories/category.routes.js";
 import ticketRouter from "./modules/tickets/ticket.routes.js";
 import commentRouter from "./modules/comments/comment.routes.js";
 import aiRouter from "./modules/ai/ai.routes.js";
+import dashboardRouter from "./modules/dashboard/dashboard.routes.js";
 
 const app = express();
 
@@ -87,6 +88,7 @@ v1Router.use("/categories", categoryRouter);
 v1Router.use("/tickets", ticketRouter);
 v1Router.use("/tickets", commentRouter);
 v1Router.use("/tickets", aiRouter);
+v1Router.use("/dashboard", dashboardRouter);
 
 app.use("/api/v1", v1Router);
 

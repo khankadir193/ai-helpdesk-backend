@@ -850,13 +850,61 @@ omitted, never invented.
 
 ---
 
-## Module: Dashboard — **Planned**
+## Module: Dashboard — **Implemented**
 
-### `GET /api/v1/dashboard/summary` — **Planned**
+### `GET /api/v1/dashboard` — **Implemented**
 
-Return aggregate ticket counts by status, open ticket age, and other support metrics.
+Role-based dashboard over read-only aggregate queries. The role comes from
+the authenticated session (never the request); no request body is needed.
+The response scope is decided server-side:
 
-**Required role:** `AGENT` or `ADMIN`
+- **ADMIN** — aggregates over every ticket, plus the admin-only
+  `category_counts` and `agent_workload` sections.
+- **AGENT** — aggregates over every ticket assigned to the caller.
+- **CUSTOMER** — aggregates over every ticket the caller created.
+
+`status_counts` / `priority_counts` always contain every existing enum
+value (zero-filled) so they reconcile with `total_tickets`. Status
+breakdowns include `CLOSED`, which exists in the schema.
+
+Query params: `page` (positive integer, default 1) and `limit` (1–100,
+default 20), applied to `recent_tickets` (newest first).
+
+**Success — `200 OK` (ADMIN):**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "dashboard": {
+      "role": "ADMIN",
+      "total_tickets": 123,
+      "status_counts": { "OPEN": 10, "IN_PROGRESS": 5, "RESOLVED": 8, "CLOSED": 100 },
+      "priority_counts": { "LOW": 20, "MEDIUM": 80, "HIGH": 18, "URGENT": 5 },
+      "category_counts": [
+        { "category_id": "3", "category_name": "Billing", "count": 60 },
+        { "category_id": null, "category_name": null, "count": 2 }
+      ],
+      "agent_workload": [
+        { "agent_id": "12", "agent_name": "Alex", "total_assigned": 8,
+          "open": 2, "in_progress": 3, "resolved": 2, "closed": 1 }
+      ],
+      "recent_tickets": [ { "id": "120", "title": "...", "status": "OPEN", "...": "same shape as GET /tickets" } ],
+      "pagination": { "page": 1, "limit": 20, "total_items": 123, "total_pages": 7 }
+    }
+  }
+}
+```
+
+**Success — `200 OK` (AGENT / CUSTOMER)**: the same object without
+`role` differences (`"role"` is `"AGENT"` or `"CUSTOMER"`), without the
+admin-only `category_counts` / `agent_workload` sections, and with
+`recent_tickets` / all counts scoped to the caller's tickets (assigned for
+agents, created for customers).
+
+**Errors:** `401` unauthenticated, `400` invalid `page`/`limit`, `403`
+unexpected role, `500` database failure (generic envelope). The dashboard
+never modifies ticket data.
 
 ---
 
