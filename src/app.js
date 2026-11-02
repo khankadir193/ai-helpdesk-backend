@@ -79,6 +79,7 @@ const v1Router = express.Router();
 v1Router.get("/health", (_req, res) => {
   res.status(200).json({
     status: "ok",
+    message: "AI Help Desk API is running successfully!",
     timestamp: new Date().toISOString(),
   });
 });
