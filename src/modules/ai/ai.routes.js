@@ -51,4 +51,17 @@ router.post(
   aiController.suggestPriority,
 );
 
+// POST /:id/ai/reply-draft - AI reply draft for support agents (AGENT
+// assigned / ADMIN, ownership scoping enforced in the service). Draft only:
+// the suggestion is stored as pending review; nothing is sent and no
+// comment is created until the agent explicitly posts one. The ticket is
+// never modified automatically.
+router.post(
+  "/:id/ai/reply-draft",
+  aiRateLimit,
+  authorize("AGENT", "ADMIN"),
+  validateTicketId,
+  aiController.generateReplyDraft,
+);
+
 export default router;

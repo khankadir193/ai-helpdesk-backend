@@ -103,6 +103,30 @@ async function listComments(ticketId, user) {
 }
 
 /**
+ * Fetch the customer-visible conversation of one ticket:
+ * every comment with `is_internal = false`, oldest first, with the author's
+ * role so the AI reply-draft prompt can label who said what.
+ * Internal notes are never included (docs/07 — do not send internal
+ * comments to the AI provider), and no names or emails are returned.
+ * The caller is responsible for verifying ticket access first.
+ *
+ * @param {string|number} ticketId
+ * @param {object} [executor]
+ * @returns {Promise<Array<{id: string|number, message: string, author_role: string}>>}
+ */
+async function listCustomerVisibleComments(ticketId, executor = database) {
+  const { rows } = await executor.query(
+    `SELECT c.id, c.message, u.role AS author_role
+     FROM ticket_comments c
+     JOIN users u ON u.id = c.author_id
+     WHERE c.ticket_id = $1 AND c.is_internal = false
+     ORDER BY c.id ASC`,
+    [ticketId],
+  );
+  return rows;
+}
+
+/**
  * Add a comment (reply) to a ticket. Customer and agent comments are
  * permitted on any ticket they can access (FR-012 / FR-023); admins may
  * comment anywhere.
@@ -141,5 +165,6 @@ async function addComment(ticketId, user, { message, is_internal = false }) {
 
 export default {
   listComments,
+  listCustomerVisibleComments,
   addComment,
 };

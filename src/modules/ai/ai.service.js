@@ -2,18 +2,27 @@ import database from "../../config/database.js";
 import ApiError from "../../utils/ApiError.js";
 import aiProvider from "./ai.provider.js";
 import categoryService from "../categories/category.service.js";
+import commentService from "../comments/comment.service.js";
 import ticketRepository from "../tickets/ticket.repository.js";
 import ticketService from "../tickets/ticket.service.js";
 import { TICKET_PRIORITIES } from "../tickets/ticket.validation.js";
 
 const CLASSIFICATION_SUGGESTION_TYPE = "CLASSIFICATION";
 const PRIORITY_SUGGESTION_TYPE = "PRIORITY";
+const REPLY_DRAFT_SUGGESTION_TYPE = "REPLY_DRAFT";
 const CLASSIFICATION_PROVIDER = "groq";
 const PRIORITY_PROVIDER = "groq";
+const REPLY_DRAFT_PROVIDER = "groq";
 
 /** Cap sent/parsed free text so prompts and stored results stay bounded. */
 const MAX_DESCRIPTION_LENGTH = 4000;
 const MAX_REASON_LENGTH = 1000;
+
+// Reply-draft bounds: prompts and stored drafts stay bounded and the
+// customer-visible conversation never contains internal comments.
+const MAX_DRAFT_LENGTH = 4000;
+const MAX_CONVERSATION_COMMENTS = 20;
+const MAX_CONVERSATION_LENGTH = 6000;
 
 /**
  * Classification suggestions below this confidence level are still returned
@@ -251,6 +260,118 @@ function validatePriorityResponse(content) {
 }
 
 /**
+ * Build the messages sent to the AI provider for a customer-facing reply
+ * draft. Context is limited to the ticket title/description, metadata the
+ * agent already shares with the customer (category name and priority), and
+ * the customer-visible comment thread produced by
+ * commentService.listCustomerVisibleComments (internal notes are never
+ * included — docs/07). No customer identity data is sent.
+ *
+ * The prompt explicitly forbids invented solutions or claims that actions
+ * were completed; the model returns ONLY {"draft": "..."}.
+ *
+ * @param {{ title: string, description: string, categoryName: string|null,
+ *           priority: string }} ticket
+ * @param {Array<{ message: string, author_role: string }>} comments
+ * @returns {{ system: string, user: string }}
+ */
+function buildReplyDraftMessages(ticket, comments) {
+  const description = String(ticket.description ?? "")
+    .trim()
+    .slice(0, MAX_DESCRIPTION_LENGTH);
+
+  const system =
+    "You are a support agent writing the next customer-facing reply for a " +
+    "help desk ticket. The reply will be reviewed and edited by a human " +
+    "agent before it is sent. " +
+    "Rules for the draft: " +
+    "- Base the reply ONLY on the ticket and conversation provided. Never " +
+    "invent solutions, reasons, timelines, refunds, or facts. " +
+    "- Never claim that an investigation, fix, or any action has already " +
+    "been completed unless the conversation shows it. You may say what the " +
+    "support team will do next when that is a known process. " +
+    "- If information is missing, ask one or two specific questions instead " +
+    "of guessing. " +
+    "- Acknowledge the customer's issue politely and keep the reply " +
+    "concise (at most 200 words), plain text. " +
+    "Respond ONLY with a JSON object and nothing else, using exactly this " +
+    "shape: {\"draft\": \"<the reply text>\"}. Never write anything outside the JSON object.";
+
+  const lines = [
+    "Ticket title:",
+    ticket.title,
+    "",
+    "Ticket description:",
+    description,
+    "",
+    `Ticket category: ${ticket.categoryName ?? "not assigned"}`,
+    `Ticket priority: ${ticket.priority}`,
+    "",
+  ];
+
+  if (comments.length === 0) {
+    lines.push(
+      "Customer conversation: (no customer-visible comments yet; draft the first reply based on the ticket details above)",
+    );
+  } else {
+    // Keep the most recent MAX_CONVERSATION_COMMENTS messages, then spend
+    // the total character budget from the newest message backwards so an
+    // oversized thread truncates its oldest turns — the newest context is
+    // the most relevant for the next reply. The kept turns are emitted in
+    // chronological order.
+    const turns = [];
+    let budget = MAX_CONVERSATION_LENGTH;
+    for (const comment of [...comments.slice(-MAX_CONVERSATION_COMMENTS)].reverse()) {
+      if (budget <= 0) break;
+      const message = String(comment.message ?? "").slice(0, budget);
+      budget -= message.length;
+      const role =
+        comment.author_role === "CUSTOMER" ? "Customer" : "Support agent";
+      turns.push({ role, message });
+    }
+    turns.reverse();
+    lines.push("Customer conversation (oldest first):");
+    lines.push(...turns.map((turn) => `${turn.role}: ${turn.message}`));
+  }
+
+  return { system, user: lines.join("\n") };
+}
+
+/**
+ * Parse and strictly validate the raw AI reply-draft response.
+ * AI output is untrusted input (docs/07): only the exact shape
+ * {"draft": "<non-empty string>"} is accepted, and the text is trimmed,
+ * length-capped, and length-checked. A whitespace-only or oversized-to-
+ * empty draft is rejected with 502 and nothing is stored.
+ *
+ * @param {string} content
+ * @returns {{ result: object, draft: string }}
+ */
+function validateReplyDraftResponse(content) {
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new ApiError(502, "AI returned a non-JSON reply draft response.");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ApiError(502, "AI returned an invalid reply draft response.");
+  }
+
+  const rawDraft = parsed.draft;
+  if (typeof rawDraft !== "string") {
+    throw new ApiError(502, "AI returned an invalid reply draft. Must be a string.");
+  }
+
+  const draft = rawDraft.trim().slice(0, MAX_DRAFT_LENGTH);
+  if (!draft) {
+    throw new ApiError(502, "AI returned an empty reply draft.");
+  }
+
+  return { result: { draft }, draft };
+}
+
+/**
  * Classify a ticket with an AI provider and store the suggestion.
  *
  * Authorization: AGENT (assigned tickets only) or ADMIN (all). The ticket,
@@ -388,13 +509,94 @@ async function suggestTicketPriority(ticketId, user) {
   return serializeSuggestion(rows[0]);
 }
 
+/**
+ * Generate a customer-facing reply draft for support agents (REPLY_DRAFT).
+ *
+ * Authorization and ticket resolution are identical to classifyTicket:
+ * AGENT (assigned tickets only) or ADMIN (all). The draft is generated ONLY
+ * (docs/07): it is stored in ai_suggestions with status PENDING and never
+ * converted into a ticket comment, and the ticket's status, priority, and
+ * category are never changed. Promoting the draft into a comment is an
+ * explicit human action by the agent.
+ *
+ * @param {string|number} ticketId — validated positive integer (route level)
+ * @param {{ id: string|number, role: string }} user
+ * @returns {Promise<object>} the stored suggestion (API shape)
+ */
+async function generateReplyDraft(ticketId, user) {
+  const row = await ticketRepository.findTicketById(ticketId);
+
+  if (!row) {
+    throw new ApiError(404, "Ticket not found.");
+  }
+  if (!ticketService.canAccessTicket(user, row)) {
+    throw new ApiError(
+      403,
+      "Forbidden. You are not authorized to access this ticket.",
+    );
+  }
+
+  // Guard against empty input (docs/07 — AI input is untrusted too), same
+  // blank-row protection as the priority suggestion.
+  const title = String(row.title ?? "").trim();
+  const description = String(row.description ?? "").trim();
+  if (!title || !description) {
+    throw new ApiError(
+      422,
+      "Ticket title and description are required for a reply draft.",
+    );
+  }
+
+  // Customer-visible conversation only (internal notes excluded); bounded
+  // by buildReplyDraftMessages. A ticket without comments drafts its first
+  // reply from the title and description alone.
+  const comments = await commentService.listCustomerVisibleComments(row.id);
+
+  const messages = buildReplyDraftMessages(
+    {
+      title,
+      description,
+      categoryName: row.category_name ?? null,
+      priority: row.priority,
+    },
+    comments,
+  );
+
+  const { content, model } = await aiProvider.generateCompletion({
+    ...messages,
+    operation: "reply draft request",
+  });
+  const replyDraft = validateReplyDraftResponse(content);
+
+  const { rows } = await database.query(
+    `INSERT INTO ai_suggestions
+       (ticket_id, requested_by, suggestion_type, result, provider, model_name, status)
+     VALUES ($1, $2, $3, $4, $5, $6, 'PENDING')
+     RETURNING id, ticket_id, suggestion_type, result, provider, model_name,
+               status, created_at`,
+    [
+      String(row.id),
+      user.id,
+      REPLY_DRAFT_SUGGESTION_TYPE,
+      JSON.stringify(replyDraft.result),
+      REPLY_DRAFT_PROVIDER,
+      model,
+    ],
+  );
+
+  return serializeSuggestion(rows[0]);
+}
+
 export default {
   classifyTicket,
   suggestTicketPriority,
+  generateReplyDraft,
   serializeSuggestion,
   // Exported for targeted tests of the pure validation logic.
   validateClassificationResponse,
   buildClassificationMessages,
   validatePriorityResponse,
   buildPriorityMessages,
+  validateReplyDraftResponse,
+  buildReplyDraftMessages,
 };
