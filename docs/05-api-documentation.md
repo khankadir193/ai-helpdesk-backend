@@ -757,6 +757,45 @@ The ticket's category, priority, status, and assignment are **not** changed auto
 
 ---
 
+### `POST /api/v1/tickets/:id/ai/priority` — **Implemented**
+
+Reads the ticket title/description from PostgreSQL and asks Groq to suggest exactly one priority level (`LOW`, `MEDIUM`, `HIGH`, `URGENT`). The result is stored as an `ai_suggestions` record with `suggestion_type = 'PRIORITY'` and `PENDING` status.
+
+**Required role:** `AGENT` (assigned tickets only) or `ADMIN`
+
+No request body is required; all inputs (ticket content, requesting user) are resolved server-side. The request shares the AI rate-limit budget with `/ai/classify`.
+
+The ticket's actual priority is **never** changed automatically — applying the suggestion is an explicit human action (e.g., `PATCH /api/v1/tickets/:id` with `priority`).
+
+**Success — `200 OK`:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "suggestion": {
+      "id": "10",
+      "ticket_id": "12",
+      "suggestion_type": "PRIORITY",
+      "provider": "groq",
+      "model_name": "llama-3.3-70b-versatile",
+      "status": "PENDING",
+      "result": {
+        "suggestedPriority": "URGENT",
+        "currentPriority": "MEDIUM",
+        "confidence": 0.95,
+        "reason": "Multiple users are blocked from working."
+      },
+      "created_at": "2026-11-02T12:05:00.000Z"
+    }
+  }
+}
+```
+
+**Errors:** `401` unauthenticated, `403` not allowed/accessible, `404` unknown ticket, `400` invalid ticket id, `422` blank ticket title/description, `429` provider rate limited, `502` invalid provider response (e.g. an unknown priority level), `503` provider not configured, `504` provider timeout. Invalid provider responses never store a suggestion.
+
+---
+
 ### `POST /api/v1/tickets/:id/ai-reply` — **Planned**
 
 Request a reply draft for the ticket conversation.

@@ -23,6 +23,30 @@ const classifyTicket = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * POST /api/v1/tickets/:id/ai/priority — AGENT (assigned) or ADMIN.
+ *
+ * Same contract as classification: no request body; the ticket content and
+ * requesting user come from the server side. The suggestion is stored in
+ * ai_suggestions with suggestion_type PRIORITY and status PENDING; the
+ * ticket's actual priority is never changed automatically.
+ *
+ * Response 200:
+ *   { status: "success", data: { suggestion: {...} } }
+ */
+const suggestPriority = asyncHandler(async (req, res) => {
+  const suggestion = await aiService.suggestTicketPriority(
+    req.params.id,
+    req.user,
+  );
+
+  res.status(200).json({
+    status: "success",
+    data: { suggestion },
+  });
+});
+
 export default {
   classifyTicket,
+  suggestPriority,
 };

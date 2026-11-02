@@ -75,14 +75,15 @@ const aiProvider = {
   /**
    * Run a JSON-mode chat completion and return the raw message content.
    *
-   * @param {{ system: string, user: string }} prompts
+   * @param {{ system: string, user: string, operation?: string }} prompts
+   *   `operation` is a server-side log label for the request.
    * @returns {Promise<{ content: string, model: string }>}
    */
-  async generateCompletion({ system, user }) {
+  async generateCompletion({ system, user, operation = "AI request" }) {
     if (!this.isConfigured()) {
       throw new ApiError(
         503,
-        "AI classification is not configured on the server yet.",
+        "AI features are not configured on the server yet.",
       );
     }
     // Recreate the client if the test harness swapped configuration.
@@ -109,7 +110,7 @@ const aiProvider = {
         model: env.groqModel,
       };
     } catch (error) {
-      throw mapProviderError(error, "classification request");
+      throw mapProviderError(error, operation);
     }
   },
 

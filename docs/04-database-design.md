@@ -272,7 +272,7 @@ CREATE TABLE ai_suggestions (
     CONSTRAINT ai_suggestions_requested_by_fk  FOREIGN KEY (requested_by) REFERENCES users(id)   ON DELETE RESTRICT,
     CONSTRAINT ai_suggestions_reviewed_by_fk   FOREIGN KEY (reviewed_by)  REFERENCES users(id)   ON DELETE RESTRICT,
     CONSTRAINT ai_suggestions_suggestion_type_check
-        CHECK (suggestion_type IN ('CLASSIFICATION', 'SUMMARY', 'REPLY_DRAFT')),
+        CHECK (suggestion_type IN ('CLASSIFICATION', 'SUMMARY', 'REPLY_DRAFT', 'PRIORITY')),
     CONSTRAINT ai_suggestions_status_check
         CHECK (status IN ('PENDING', 'ACCEPTED', 'REJECTED')),
     CONSTRAINT ai_suggestions_result_object
@@ -291,7 +291,7 @@ CREATE TABLE ai_suggestions (
 | `id` | `BIGINT` | Auto-generated primary key |
 | `ticket_id` | `BIGINT NOT NULL` | FK → `tickets.id`. The ticket this suggestion is for. |
 | `requested_by` | `BIGINT` | FK → `users.id`. Who triggered the AI request. Nullable (future system-initiated requests). |
-| `suggestion_type` | `VARCHAR(30)` | One of `CLASSIFICATION`, `SUMMARY`, `REPLY_DRAFT`. |
+| `suggestion_type` | `VARCHAR(30)` | One of `CLASSIFICATION`, `SUMMARY`, `REPLY_DRAFT`, `PRIORITY`. |
 | `result` | `JSONB` | The raw AI response. Must be a JSON object. |
 | `provider` | `VARCHAR(80)` | The AI provider name, e.g., `openai`, `google`. |
 | `model_name` | `VARCHAR(120)` | The specific model used, e.g., `gpt-4o`. |

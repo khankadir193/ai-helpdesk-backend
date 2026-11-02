@@ -72,14 +72,14 @@ Requirements are grouped by user role and use identifiers in the format `FR-NNN`
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| FR-060 | The backend can send ticket data to an AI provider and receive a category suggestion | Should have | **Planned** |
-| FR-061 | The backend can request a priority suggestion from the AI provider | Could have | **Planned** |
+| FR-060 | The backend can send ticket data to an AI provider and receive a category suggestion | Should have | **Implemented** |
+| FR-061 | The backend can request a priority suggestion from the AI provider | Could have | **Implemented** |
 | FR-062 | The backend can request a reply draft from the AI provider for agent review | Should have | **Planned** |
 | FR-063 | The backend can request a conversation summary from the AI provider | Could have | **Planned** |
-| FR-064 | AI suggestions are stored in `ai_suggestions` with `PENDING` status until reviewed | Must have | **Planned** |
+| FR-064 | AI suggestions are stored in `ai_suggestions` with `PENDING` status until reviewed | Must have | **Implemented** |
 | FR-065 | An authorized user (agent or admin) can accept or reject an AI suggestion | Must have | **Planned** |
 | FR-066 | Accepting an AI suggestion does not automatically update the ticket; the user must apply it manually | Must have | **Planned** |
-| FR-067 | AI requests are always made by the backend; the browser never sends requests directly to the AI provider | Must have | **Planned** |
+| FR-067 | AI requests are always made by the backend; the browser never sends requests directly to the AI provider | Must have | **Implemented** |
 
 ---
 
