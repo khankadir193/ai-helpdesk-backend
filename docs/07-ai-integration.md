@@ -6,10 +6,16 @@ This document explains how AI fits into the support workflow, why AI features ar
 
 ## Current State
 
-> [!WARNING]
-> The AI module (`src/modules/ai/`) exists as stub files only. The route file has no routes, the service file is empty, and the provider file is empty. The `ai_suggestions` database table is fully designed and created. The AI feature is **Planned**.
-
-The schema is ready. The integration needs to be built.
+> [!IMPORTANT]
+> Ticket classification is **Implemented** with the Groq provider (`groq-sdk`):
+> `POST /api/v1/tickets/:id/ai/classify` — AGENT (assigned tickets) or ADMIN,
+> responses validated server-side, suggestions stored in `ai_suggestions`
+> with status `PENDING`. Groq is configured through backend environment
+> variables (`GROQ_API_KEY`, `GROQ_MODEL`, optional `GROQ_TIMEOUT_MS`); the
+> key is never sent to the browser. Reply drafts (`REPLY_DRAFT`) and
+> conversation summaries (`SUMMARY`) remain **Planned**, as does the
+> suggestion review endpoint. The `ai_suggestions` database table is fully
+> designed and created.
 
 ---
 

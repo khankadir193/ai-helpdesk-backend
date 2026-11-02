@@ -716,13 +716,44 @@ Change a user's role.
 
 ---
 
-## Module: AI — **Planned**
+## Module: AI
 
-### `POST /api/v1/ai/classify-ticket` — **Planned**
+### `POST /api/v1/tickets/:id/ai/classify` — **Implemented**
 
-Send ticket content to the AI provider and receive a classification suggestion (category, priority, summary). Stores the result as an `ai_suggestions` record with `PENDING` status.
+Reads the ticket title/description and the current active categories from PostgreSQL, classifies the ticket with Groq, and stores the result as an `ai_suggestions` record with `PENDING` status.
 
-**Required role:** `AGENT` or `ADMIN`
+**Required role:** `AGENT` (assigned tickets only) or `ADMIN`
+
+No request body is required; all inputs (ticket content, categories, requesting user) are resolved server-side.
+
+The ticket's category, priority, status, and assignment are **not** changed automatically — applying a suggestion is always an explicit human action.
+
+**Success — `200 OK`:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "suggestion": {
+      "id": "9",
+      "ticket_id": "12",
+      "suggestion_type": "CLASSIFICATION",
+      "provider": "groq",
+      "model_name": "llama-3.3-70b-versatile",
+      "status": "PENDING",
+      "result": {
+        "suggestedCategory": "Account Issues",
+        "suggestedCategoryId": "2",
+        "confidence": 0.92,
+        "reason": "The customer is experiencing a password reset problem."
+      },
+      "created_at": "2026-11-02T12:00:00.000Z"
+    }
+  }
+}
+```
+
+**Errors:** `401` unauthenticated, `403` not allowed/accessible, `404` unknown ticket, `400` invalid ticket id, `429` provider rate limited, `502` invalid provider response, `503` provider not configured / no active categories, `504` provider timeout. Invalid provider responses never store a suggestion.
 
 ---
 

@@ -240,16 +240,26 @@ Covers the full `/api/v1/tickets` module (67 tests):
 | Admin changes user role | `200`, role updated |
 | Admin deactivates user | `200`; user's subsequent requests return `401` |
 
-### AI (`src/tests/ai.test.js`) — Planned
+### AI (`src/tests/ai.test.js`) — **Implemented**
+
+Groq responses are mocked by substituting `aiProvider.generateCompletion`; no API key is required.
 
 | Scenario | Expected Result |
 |---|---|
-| Agent requests classification | `200`, suggestion stored as `PENDING` |
-| Ticket not modified by classification | Original ticket fields unchanged |
+| Agent assigned to ticket requests classification | `200`, suggestion stored as `PENDING` in `ai_suggestions` |
+| Suggested category name matched case-insensitively | Canonical active category name/id stored |
+| Ticket not modified by classification | Ticket fields and `ticket_history` unchanged |
 | Customer requests AI classification | `403 Forbidden` |
-| Agent reviews suggestion (accept) | `200`, `status = 'ACCEPTED'`, `reviewed_by` set |
-| AI provider timeout | Graceful error, not a crash |
-| AI provider returns invalid response shape | `502 Bad Gateway` or `503` |
+| Unassigned agent on another agent's ticket | `403 Forbidden` |
+| Missing ticket / invalid id | `404` / `400` |
+| AI response not JSON / wrong shape | `502`, nothing stored |
+| Invalid confidence (`1.5`, `92`, `"0.9"`, missing) | `502`, nothing stored |
+| Unsupported category / invalid reason | `502`, nothing stored |
+| Low confidence result | `200`, stored as `PENDING`, surfaced to caller |
+| Provider timeout / rate limit / unavailable | `504` / `429` / `502`, nothing stored |
+| Provider not configured | `503` |
+| `ai_suggestions` insert failure | `500` generic envelope, nothing stored |
+| Request without or with empty body | `200` (no body required) |
 
 ---
 

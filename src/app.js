@@ -9,6 +9,7 @@ import authRouter from "./modules/auth/auth.routes.js";
 import categoryRouter from "./modules/categories/category.routes.js";
 import ticketRouter from "./modules/tickets/ticket.routes.js";
 import commentRouter from "./modules/comments/comment.routes.js";
+import aiRouter from "./modules/ai/ai.routes.js";
 
 const app = express();
 
@@ -85,6 +86,7 @@ v1Router.use("/auth", authRouter);
 v1Router.use("/categories", categoryRouter);
 v1Router.use("/tickets", ticketRouter);
 v1Router.use("/tickets", commentRouter);
+v1Router.use("/tickets", aiRouter);
 
 app.use("/api/v1", v1Router);
 
