@@ -12,6 +12,7 @@ import commentRouter from "./modules/comments/comment.routes.js";
 import aiRouter from "./modules/ai/ai.routes.js";
 import dashboardRouter from "./modules/dashboard/dashboard.routes.js";
 import reportsRouter from "./modules/reports/reports.routes.js";
+import userRouter from "./modules/users/user.routes.js";
 
 const app = express();
 
@@ -92,6 +93,7 @@ v1Router.use("/tickets", commentRouter);
 v1Router.use("/tickets", aiRouter);
 v1Router.use("/dashboard", dashboardRouter);
 v1Router.use("/reports", reportsRouter);
+v1Router.use("/users", userRouter);
 
 app.use("/api/v1", v1Router);
 
