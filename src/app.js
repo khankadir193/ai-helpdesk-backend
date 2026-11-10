@@ -13,6 +13,7 @@ import aiRouter from "./modules/ai/ai.routes.js";
 import dashboardRouter from "./modules/dashboard/dashboard.routes.js";
 import reportsRouter from "./modules/reports/reports.routes.js";
 import userRouter from "./modules/users/user.routes.js";
+import kbRouter from "./modules/kb/kb.routes.js";
 
 const app = express();
 
@@ -94,6 +95,7 @@ v1Router.use("/tickets", aiRouter);
 v1Router.use("/dashboard", dashboardRouter);
 v1Router.use("/reports", reportsRouter);
 v1Router.use("/users", userRouter);
+v1Router.use("/kb", kbRouter);
 
 app.use("/api/v1", v1Router);
 
