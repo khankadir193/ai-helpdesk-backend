@@ -148,22 +148,79 @@ export const kbService = {
     const limit = Math.max(1, Math.min(100, parseInt(pageSize, 10) || 8));
     const offset = (pageNum - 1) * limit;
 
-    // First fetch global status counts (independent of current status filter)
-    const countsParams = [];
-    let countsWhere = 'WHERE 1=1';
+    // Normalize and validate status enum
+    const VALID_STATUSES = new Set(['PUBLISHED', 'DRAFT', 'IN_REVIEW', 'ARCHIVED']);
+    const normalizedStatus = typeof status === 'string' ? status.trim().toUpperCase() : '';
+    if (normalizedStatus && normalizedStatus !== 'ALL' && !VALID_STATUSES.has(normalizedStatus)) {
+      throw new ApiError(400, `Invalid status filter "${status}". Expected ALL, PUBLISHED, DRAFT, IN_REVIEW, or ARCHIVED.`);
+    }
 
-    if (q && q.trim()) {
-      countsParams.push(`%${q.trim()}%`);
-      const pIdx = countsParams.length;
-      countsWhere += ` AND (a.title ILIKE $${pIdx} OR a.article_id ILIKE $${pIdx} OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE t ILIKE $${pIdx}))`;
+    // Validate authorId if supplied
+    let resolvedAuthorId = null;
+    if (authorId !== undefined && authorId !== null && String(authorId).trim() !== '') {
+      const rawAuthor = String(authorId).trim();
+      if (!/^[1-9]\d*$/.test(rawAuthor)) {
+        throw new ApiError(400, 'Invalid authorId. Must be a positive integer.');
+      }
+      resolvedAuthorId = rawAuthor;
     }
-    if (categoryId) {
-      countsParams.push(categoryId);
-      countsWhere += ` AND (a.category_id = $${countsParams.length} OR c.slug = $${countsParams.length})`;
+
+    // Resolve categoryId as numeric ID, "uncategorized", or category slug
+    let categoryFilterMode = 'none'; // 'none' | 'uncategorized' | 'id' | 'not_found'
+    let resolvedCategoryId = null;
+    if (categoryId !== undefined && categoryId !== null && String(categoryId).trim() !== '') {
+      const rawCategory = String(categoryId).trim();
+      if (rawCategory.toLowerCase() === 'uncategorized') {
+        categoryFilterMode = 'uncategorized';
+      } else if (/^[1-9]\d*$/.test(rawCategory)) {
+        categoryFilterMode = 'id';
+        resolvedCategoryId = rawCategory;
+      } else {
+        const catRes = await database.query(
+          'SELECT id FROM kb_categories WHERE lower(slug) = lower($1) LIMIT 1',
+          [rawCategory]
+        );
+        if (catRes.rows.length > 0) {
+          categoryFilterMode = 'id';
+          resolvedCategoryId = catRes.rows[0].id;
+        } else {
+          categoryFilterMode = 'not_found';
+        }
+      }
     }
-    if (authorId) {
-      countsParams.push(authorId);
-      countsWhere += ` AND a.author_id = $${countsParams.length}`;
+
+    if (categoryFilterMode === 'not_found') {
+      return {
+        items: [],
+        total: 0,
+        page: pageNum,
+        pageSize: limit,
+        totalPages: 1,
+        statusCounts: { all: 0, published: 0, draft: 0, in_review: 0, archived: 0 },
+      };
+    }
+
+    // Shared base WHERE clause (search, category, author) used by both statusCounts and filtered query
+    const baseParams = [];
+    let baseWhere = 'WHERE 1=1';
+
+    const trimmedQ = typeof q === 'string' ? q.trim() : '';
+    if (trimmedQ.length > 0) {
+      baseParams.push(`%${trimmedQ}%`);
+      const pIdx = baseParams.length;
+      baseWhere += ` AND (a.title ILIKE $${pIdx} OR a.article_id ILIKE $${pIdx} OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE t ILIKE $${pIdx}))`;
+    }
+
+    if (categoryFilterMode === 'uncategorized') {
+      baseWhere += ' AND a.category_id IS NULL';
+    } else if (categoryFilterMode === 'id') {
+      baseParams.push(resolvedCategoryId);
+      baseWhere += ` AND a.category_id = $${baseParams.length}`;
+    }
+
+    if (resolvedAuthorId) {
+      baseParams.push(resolvedAuthorId);
+      baseWhere += ` AND a.author_id = $${baseParams.length}`;
     }
 
     const countsQuery = `
@@ -175,10 +232,10 @@ export const kbService = {
         count(*) FILTER (WHERE a.status = 'ARCHIVED')::int as archived_count
       FROM kb_articles a
       LEFT JOIN kb_categories c ON a.category_id = c.id
-      ${countsWhere}
+      ${baseWhere}
     `;
 
-    const countsRes = await database.query(countsQuery, countsParams);
+    const countsRes = await database.query(countsQuery, baseParams);
     const rawCounts = countsRes.rows[0] || {};
     const statusCounts = {
       all: rawCounts.all_count || 0,
@@ -188,32 +245,16 @@ export const kbService = {
       archived: rawCounts.archived_count || 0,
     };
 
-    // Filtered query for list
-    const values = [];
-    let whereClause = 'WHERE 1=1';
+    // Filtered query for list & total (adds status filter on top of baseWhere)
+    const values = [...baseParams];
+    let whereClause = baseWhere;
 
-    if (q && q.trim()) {
-      values.push(`%${q.trim()}%`);
-      const pIdx = values.length;
-      whereClause += ` AND (a.title ILIKE $${pIdx} OR a.article_id ILIKE $${pIdx} OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE t ILIKE $${pIdx}))`;
-    }
-
-    if (status && status.toUpperCase() !== 'ALL') {
-      values.push(status.toUpperCase());
+    if (normalizedStatus && normalizedStatus !== 'ALL') {
+      values.push(normalizedStatus);
       whereClause += ` AND a.status = $${values.length}`;
     }
 
-    if (categoryId) {
-      values.push(categoryId);
-      whereClause += ` AND (a.category_id = $${values.length} OR c.slug = $${values.length})`;
-    }
-
-    if (authorId) {
-      values.push(authorId);
-      whereClause += ` AND a.author_id = $${values.length}`;
-    }
-
-    // Sorting
+    // Strict whitelist for sort column and direction
     const sortFieldMap = {
       article_id: 'a.article_id',
       title: 'a.title',
@@ -223,8 +264,10 @@ export const kbService = {
       updated: 'a.updated_at',
       updated_at: 'a.updated_at',
     };
-    const sortCol = sortFieldMap[sort.toLowerCase()] || 'a.article_id';
-    const sortDir = order.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+    const sortKey = typeof sort === 'string' ? sort.trim().toLowerCase() : 'article_id';
+    const sortCol = Object.hasOwn(sortFieldMap, sortKey) ? sortFieldMap[sortKey] : 'a.article_id';
+    const orderKey = typeof order === 'string' ? order.trim().toLowerCase() : 'asc';
+    const sortDir = orderKey === 'desc' ? 'DESC' : 'ASC';
 
     // Total count with current filters
     const totalQuery = `
