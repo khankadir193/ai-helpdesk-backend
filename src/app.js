@@ -14,6 +14,7 @@ import dashboardRouter from "./modules/dashboard/dashboard.routes.js";
 import reportsRouter from "./modules/reports/reports.routes.js";
 import userRouter from "./modules/users/user.routes.js";
 import kbRouter from "./modules/kb/kb.routes.js";
+import settingsRouter from "./modules/settings/settings.routes.js";
 
 const app = express();
 
@@ -63,10 +64,10 @@ const corsOptions = env.isProduction
 app.use(cors(corsOptions));
 
 // ---------------------------------------------------------------------------
-// Body parsers — cap at 100 kb to prevent request-body DoS
+// Body parsers — 10mb to allow image avatar uploads
 // ---------------------------------------------------------------------------
-app.use(express.json({ limit: "100kb" }));
-app.use(express.urlencoded({ extended: false, limit: "100kb" }));
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: false, limit: "10mb" }));
 
 // ---------------------------------------------------------------------------
 // Session middleware
@@ -96,6 +97,7 @@ v1Router.use("/dashboard", dashboardRouter);
 v1Router.use("/reports", reportsRouter);
 v1Router.use("/users", userRouter);
 v1Router.use("/kb", kbRouter);
+v1Router.use("/settings", settingsRouter);
 
 app.use("/api/v1", v1Router);
 
