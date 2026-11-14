@@ -4,6 +4,7 @@
  */
 import database from "../../config/database.js";
 import ApiError from "../../utils/ApiError.js";
+import { sendInvitationEmail } from "../../utils/mailer.js";
 
 const SLA_MET_EXPR = `(
   (t.priority = 'URGENT' AND EXTRACT(EPOCH FROM (t.resolved_at - t.created_at)) / 3600 <= 4)  OR
@@ -42,8 +43,11 @@ function parseDateRange(query) {
     throw new ApiError(400, "from date must not be after to date.");
   }
 
-  dateFrom.setHours(0, 0, 0, 0);
-  dateTo.setHours(23, 59, 59, 999);
+  // Normalize to UTC day boundaries so range labels, the daily
+  // generate_series buckets (::date in UTC), and every query agree
+  // regardless of the Node process timezone.
+  dateFrom.setUTCHours(0, 0, 0, 0);
+  dateTo.setUTCHours(23, 59, 59, 999);
 
   return { from: dateFrom.toISOString(), to: dateTo.toISOString() };
 }
@@ -254,6 +258,13 @@ async function getTeamPerformance(user, query = {}) {
     ];
   }
 
+  // Agents shown to the user: when live data is displayed use the real
+  // active-agent count (list length equals it — same filter); when
+  // illustrative agents are injected keep the reference fallback (min 8).
+  const totalAgentsCount = isDemo
+    ? Math.max(totalActiveAgents, 8)
+    : Math.max(totalActiveAgents, agents.length);
+
   const kpis = {
     resolved_tickets: resolvedCount,
     avg_first_response_hours: toFloat(frRows[0]?.avg_hours) ?? 0.211, // ~12m 40s
@@ -261,7 +272,7 @@ async function getTeamPerformance(user, query = {}) {
     sla_compliance_pct: slaPct,
     sla_within_target: withinTarget,
     sla_total_resolved: totalResolved,
-    active_agents_count: totalActiveAgents > agents.length ? totalActiveAgents : 8,
+    active_agents_count: totalAgentsCount,
   };
 
   const workload = {
@@ -277,9 +288,9 @@ async function getTeamPerformance(user, query = {}) {
     workload,
     agents,
     meta: {
-      total_agents: totalActiveAgents > agents.length ? totalActiveAgents : 8,
+      total_agents: totalAgentsCount,
       active_agents: agents.length,
-      meta_text: `${agents.length} of ${totalActiveAgents > agents.length ? totalActiveAgents : 8} agents${isDemo ? " · Illustrative data" : ""}`,
+      meta_text: `${agents.length} of ${totalAgentsCount} agents${isDemo ? " · Illustrative data" : ""}`,
       is_illustrative: isDemo,
       footnote: "SLA = resolved within the configured target. CSAT is the average customer rating out of 5; no live measurements are shown.",
     },
@@ -543,7 +554,7 @@ async function createInvitation(user, { email, role, team }) {
   const { rows: inserted } = await database.query(
     `INSERT INTO team_invitations (email, role, team, invited_by, status, token, expires_at)
      VALUES ($1, $2, $3, $4, 'PENDING', $5, now() + interval '7 days')
-     RETURNING id::text, email, role, team, status, expires_at, created_at`,
+     RETURNING id::text, email, role, team, status, token, expires_at, created_at`,
     [email, role, team, user.id, token],
   );
 
@@ -555,14 +566,55 @@ async function createInvitation(user, { email, role, team }) {
     )
   `);
 
-  return inserted[0];
+  // Send the invitation email and report the REAL delivery outcome.
+  // Awaited on purpose — the API response must never claim "sent" for an
+  // email that failed (see email_delivery below).
+  const { token: inviteToken, ...invitation } = inserted[0];
+  const email_delivery = await sendInvitationEmail({
+    to: invitation.email,
+    role: invitation.role,
+    team: invitation.team,
+    token: inviteToken,
+    expiresAt: invitation.expires_at,
+  });
+
+  return { ...invitation, email_delivery };
 }
 
 /**
  * 9. List Members & Pending Invitations
+ *
+ * Members are paginated (page/pageSize, max 100) and optionally filtered by
+ * a search term (q) matching name, email, or role. Pending invitations are
+ * returned in full (they are naturally few). The response keeps the original
+ * fields (members, invitations, meta) and adds KB-style pagination fields
+ * (total, page, pageSize, totalPages).
  */
-async function listMembers(_user) {
-  // Query active team members (ADMIN, MANAGER, AGENT)
+async function listMembers(_user, query = {}) {
+  const pageNum = Math.max(1, parseInt(query.page, 10) || 1);
+  const limit = Math.max(1, Math.min(100, parseInt(query.pageSize, 10) || 10));
+
+  const trimmedSearch = typeof query.q === "string" ? query.q.trim() : "";
+  const memberParams = [];
+  let memberWhere = "WHERE u.role IN ('ADMIN', 'MANAGER', 'AGENT') AND u.is_active = TRUE";
+  if (trimmedSearch) {
+    memberParams.push(`%${trimmedSearch}%`);
+    memberWhere += " AND (u.name ILIKE $1 OR u.email ILIKE $1 OR u.role ILIKE $1)";
+  }
+
+  // Total count uses exactly the same filters as the list query below.
+  const { rows: countRows } = await database.query(
+    `SELECT COUNT(*)::int AS total FROM users u ${memberWhere}`,
+    memberParams,
+  );
+  const total = countRows[0]?.total || 0;
+  const totalPages = Math.ceil(total / limit) || 1;
+
+  // Gracefully clamp out-of-range pages to the last available page.
+  const page = Math.min(pageNum, totalPages);
+  const offset = (page - 1) * limit;
+
+  // Query active team members (ADMIN, MANAGER, AGENT) for the requested page
   const { rows: memberRows } = await database.query(
     `SELECT
        u.id::text,
@@ -580,10 +632,13 @@ async function listMembers(_user) {
        ) AS job_title
      FROM users u
      LEFT JOIN user_profiles up ON up.user_id = u.id
-     WHERE u.role IN ('ADMIN', 'MANAGER', 'AGENT') AND u.is_active = TRUE
+     ${memberWhere}
      ORDER BY
        CASE u.role WHEN 'ADMIN' THEN 1 WHEN 'MANAGER' THEN 2 ELSE 3 END,
-       lower(u.name) ASC`,
+       lower(u.name) ASC,
+       u.id ASC
+     LIMIT $${memberParams.length + 1} OFFSET $${memberParams.length + 2}`,
+    [...memberParams, limit, offset],
   );
 
   // Query active pending invitations
@@ -606,34 +661,65 @@ async function listMembers(_user) {
   return {
     members: memberRows,
     invitations: inviteRows,
+    total,
+    page,
+    pageSize: limit,
+    totalPages,
     meta: {
-      total_members: memberRows.length,
+      total_members: total,
       pending_invitations: inviteRows.length,
     },
   };
 }
 
 /**
+ * Invitation ids are BIGINT identity values. Reject anything non-numeric
+ * with a clear 404 instead of a Postgres cast error (500).
+ */
+const INVITATION_NOT_FOUND_MESSAGE =
+  "Invitation not found or is no longer pending (it may already have been revoked, accepted, or expired).";
+
+function isNumericId(value) {
+  return /^[1-9]\d*$/.test(String(value ?? ""));
+}
+
+/**
  * 10. Resend Invitation
+ *
+ * Extends the expiry AND actually re-sends the invitation email,
+ * reporting the real delivery outcome.
  */
 async function resendInvitation(user, invitationId) {
   if (user.role !== "ADMIN" && user.role !== "MANAGER") {
     throw new ApiError(403, "You do not have permission to manage invitations.");
   }
 
+  if (!isNumericId(invitationId)) {
+    throw new ApiError(404, INVITATION_NOT_FOUND_MESSAGE);
+  }
+
   const { rows } = await database.query(
     `UPDATE team_invitations
      SET expires_at = now() + interval '7 days', updated_at = now()
      WHERE id = $1 AND status = 'PENDING'
-     RETURNING id::text, email, role, team, status, expires_at`,
+     RETURNING id::text, email, role, team, status, token, expires_at`,
     [invitationId],
   );
 
   if (rows.length === 0) {
-    throw new ApiError(404, "Pending invitation not found.");
+    throw new ApiError(404, INVITATION_NOT_FOUND_MESSAGE);
   }
 
-  return rows[0];
+  const { token, ...invitation } = rows[0];
+  const email_delivery = await sendInvitationEmail({
+    to: invitation.email,
+    role: invitation.role,
+    team: invitation.team,
+    token,
+    expiresAt: invitation.expires_at,
+  });
+
+  return { ...invitation, email_delivery };
 }
 
 /**
@@ -642,6 +728,10 @@ async function resendInvitation(user, invitationId) {
 async function revokeInvitation(user, invitationId) {
   if (user.role !== "ADMIN" && user.role !== "MANAGER") {
     throw new ApiError(403, "You do not have permission to manage invitations.");
+  }
+
+  if (!isNumericId(invitationId)) {
+    throw new ApiError(404, INVITATION_NOT_FOUND_MESSAGE);
   }
 
   const { rows } = await database.query(
@@ -653,7 +743,7 @@ async function revokeInvitation(user, invitationId) {
   );
 
   if (rows.length === 0) {
-    throw new ApiError(404, "Pending invitation not found.");
+    throw new ApiError(404, INVITATION_NOT_FOUND_MESSAGE);
   }
 
   // Update pending_invites_count

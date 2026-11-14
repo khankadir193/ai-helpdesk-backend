@@ -79,7 +79,7 @@ const createInvitation = asyncHandler(async (req, res) => {
 });
 
 const listMembers = asyncHandler(async (req, res) => {
-  const data = await teamService.listMembers(req.user);
+  const data = await teamService.listMembers(req.user, req.query);
   res.status(200).json({
     status: "success",
     data,

@@ -5,11 +5,14 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import app from "../app.js";
+import database from "../config/database.js";
 
 let server;
 let baseUrl;
 let adminCookie;
 let agentCookie;
+// Invitation emails created by this test run (cleaned up in after()).
+const createdInvitationEmails = [];
 
 async function loginAndGetCookie(port, email, password) {
   const res = await fetch(`http://127.0.0.1:${port}/api/v1/auth/login`, {
@@ -63,9 +66,165 @@ before(async () => {
 });
 
 after(async () => {
+  // Revoke invitations created by this run so they don't linger as pending.
+  for (const email of createdInvitationEmails) {
+    await database.query(
+      `UPDATE team_invitations SET status = 'REVOKED', updated_at = now()
+       WHERE LOWER(email) = LOWER($1) AND status = 'PENDING'`,
+      [email],
+    );
+  }
   if (server) {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+// Members list & pagination
+// ---------------------------------------------------------------------------
+
+test("GET /team/members returns paginated members with pagination fields", async () => {
+  const res = await request("/team/members?page=1&pageSize=5", { cookie: adminCookie });
+  assert.equal(res.status, 200);
+
+  const { data } = res.data;
+  assert.ok(Array.isArray(data.members));
+  assert.ok(data.members.length <= 5);
+  assert.ok(Array.isArray(data.invitations));
+  assert.equal(typeof data.total, "number");
+  assert.equal(data.page, 1);
+  assert.equal(data.pageSize, 5);
+  assert.ok(data.totalPages >= 1);
+  assert.ok(data.meta);
+  assert.equal(data.meta.total_members, data.total);
+});
+
+test("GET /team/members page 2 returns different rows than page 1", async () => {
+  const page1 = await request("/team/members?page=1&pageSize=5", { cookie: adminCookie });
+  const page2 = await request("/team/members?page=2&pageSize=5", { cookie: adminCookie });
+  assert.equal(page1.status, 200);
+  assert.equal(page2.status, 200);
+
+  const ids1 = page1.data.data.members.map((m) => m.id);
+  const ids2 = page2.data.data.members.map((m) => m.id);
+  assert.equal(ids1.length, 5);
+  assert.equal(ids2.length, 5);
+  assert.ok(ids1.some((id) => !ids2.includes(id)), "pages 1 and 2 must not overlap");
+});
+
+test("GET /team/members supports search (q) with the same response shape", async () => {
+  const res = await request("/team/members?pageSize=10&q=zzz_no_such_member_zzz", { cookie: adminCookie });
+  assert.equal(res.status, 200);
+
+  const { data } = res.data;
+  assert.equal(data.members.length, 0);
+  assert.equal(data.total, 0);
+  assert.equal(data.totalPages, 1);
+  assert.ok(Array.isArray(data.invitations));
+});
+
+test("GET /team/members clamps an out-of-range page to the last page", async () => {
+  const first = await request("/team/members?page=1&pageSize=5", { cookie: adminCookie });
+  const totalPages = first.data.data.totalPages;
+  const res = await request("/team/members?page=9999&pageSize=5", { cookie: adminCookie });
+  assert.equal(res.status, 200);
+  assert.equal(res.data.data.page, totalPages);
+  assert.ok(res.data.data.members.length > 0);
+});
+
+// Invitations: real email delivery state, resend, revoke
+// ---------------------------------------------------------------------------
+
+async function createTestInvitation(prefix) {
+  const email = `${prefix}.${Date.now()}@example.com`;
+  const res = await request("/team/invitations", {
+    method: "POST",
+    cookie: adminCookie,
+    body: { email, role: "AGENT", team: "General support" },
+  });
+  createdInvitationEmails.push(email);
+  return res;
+}
+
+test("POST /team/invitations reports the real email delivery state", async () => {
+  const res = await createTestInvitation("delivery.check");
+  assert.equal(res.status, 201);
+
+  const invitation = res.data.data.invitation;
+  assert.ok(invitation.email_delivery, "email_delivery must be present");
+  assert.equal(invitation.email_delivery.sent, true); // console transport in tests
+  assert.equal(invitation.email_delivery.mode, "console");
+  assert.equal(invitation.token, undefined, "invite token must not leak to the client");
+});
+
+test("DELETE /team/invitations/:id revokes, then repeats with a clear 404", async () => {
+  const createRes = await createTestInvitation("revoke.flow");
+  assert.equal(createRes.status, 201);
+  const { id, email } = createRes.data.data.invitation;
+
+  // First revoke succeeds
+  const revokeRes = await request(`/team/invitations/${id}`, { method: "DELETE", cookie: adminCookie });
+  assert.equal(revokeRes.status, 200);
+  assert.equal(revokeRes.data.data.revoked, true);
+
+  // Repeating the revoke returns 404 with a clear message
+  const repeatRes = await request(`/team/invitations/${id}`, { method: "DELETE", cookie: adminCookie });
+  assert.equal(repeatRes.status, 404);
+  assert.ok(repeatRes.data.message.includes("no longer pending"));
+
+  // The revoked invite is gone from the pending invitations list
+  const membersRes = await request("/team/members", { cookie: adminCookie });
+  const pendingEmails = membersRes.data.data.invitations.map((inv) => inv.email);
+  assert.ok(!pendingEmails.includes(email), "revoked invite must not be listed as pending");
+});
+
+test("DELETE /team/invitations/:id rejects non-numeric ids with 404 (not 500)", async () => {
+  const res = await request("/team/invitations/not-a-number", { method: "DELETE", cookie: adminCookie });
+  assert.equal(res.status, 404);
+  assert.ok(res.data.message.includes("not found"));
+});
+
+test("DELETE /team/invitations/:id as AGENT returns 403", async () => {
+  const createRes = await createTestInvitation("revoke.agent");
+  assert.equal(createRes.status, 201);
+  const { id } = createRes.data.data.invitation;
+
+  const res = await request(`/team/invitations/${id}`, { method: "DELETE", cookie: agentCookie });
+  assert.equal(res.status, 403);
+});
+
+test("POST /team/invitations/:id/resend re-sends and extends expiry", async () => {
+  const createRes = await createTestInvitation("resend.flow");
+  assert.equal(createRes.status, 201);
+  const { id, email } = createRes.data.data.invitation;
+
+  const res = await request(`/team/invitations/${id}/resend`, { method: "POST", cookie: adminCookie });
+  assert.equal(res.status, 200);
+
+  const invitation = res.data.data.invitation;
+  assert.equal(invitation.email, email);
+  assert.ok(invitation.email_delivery);
+  assert.equal(invitation.email_delivery.sent, true);
+  assert.ok(invitation.token === undefined, "invite token must not leak to the client");
+  const newExpiry = new Date(invitation.expires_at).getTime();
+  assert.ok(newExpiry > Date.now() + 6 * 24 * 60 * 60 * 1000, "expiry must be extended ~7 days");
+});
+
+test("POST /team/invitations/:id/resend on an already-revoked invite returns a clear 404", async () => {
+  const createRes = await createTestInvitation("resend.revoked");
+  assert.equal(createRes.status, 201);
+  const { id } = createRes.data.data.invitation;
+
+  await request(`/team/invitations/${id}`, { method: "DELETE", cookie: adminCookie });
+  const res = await request(`/team/invitations/${id}/resend`, { method: "POST", cookie: adminCookie });
+  assert.equal(res.status, 404);
+  assert.ok(res.data.message.includes("no longer pending"));
+});
+
+test("GET /team/members lists members and pending invitations (regression)", async () => {
+  const res = await request("/team/members", { cookie: adminCookie });
+  assert.equal(res.status, 200);
+  assert.ok(Array.isArray(res.data.data.members));
+  assert.ok(Array.isArray(res.data.data.invitations));
 });
 
 test("GET /team/performance requires authentication (401)", async () => {
