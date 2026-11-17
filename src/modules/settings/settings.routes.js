@@ -10,6 +10,7 @@ import {
   changePasswordSchema,
   patchTeamSchema,
   patchAiSchema,
+  patch2faSchema,
 } from "./settings.validation.js";
 
 const router = express.Router();
@@ -67,7 +68,12 @@ router.post(
   settingsController.changePassword
 );
 router.get("/profile/2fa", settingsController.get2fa);
-router.post("/profile/2fa", sensitiveActionRateLimit, settingsController.patch2fa);
+router.post(
+  "/profile/2fa",
+  sensitiveActionRateLimit,
+  validate(patch2faSchema),
+  settingsController.patch2fa
+);
 
 // Sessions
 router.get("/sessions", settingsController.getSessions);

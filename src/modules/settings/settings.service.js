@@ -381,11 +381,19 @@ async function getTeamSettings() {
     LIMIT 1
   `);
 
-  // Count active members in users table
+  // Count team members with the same filter as the Team tab (team.service listMembers):
+  // active ADMIN/MANAGER/AGENT users only — customers are not members.
   const { rows: memberRows } = await database.query(
-    "SELECT count(*) as count FROM users WHERE is_active = true"
+    "SELECT COUNT(*)::int AS count FROM users WHERE role IN ('ADMIN', 'MANAGER', 'AGENT') AND is_active = TRUE"
   );
-  const activeCount = parseInt(memberRows[0]?.count, 10) || 12;
+  const activeCount = parseInt(memberRows[0]?.count, 10) || 0;
+
+  // Pending invites counted directly so the number can never drift from the
+  // Team tab (expired invitations are excluded there too).
+  const { rows: inviteRows } = await database.query(
+    "SELECT COUNT(*)::int AS count FROM team_invitations WHERE status = 'PENDING' AND expires_at > now()"
+  );
+  const pendingCount = parseInt(inviteRows[0]?.count, 10) || 0;
 
   const defaults = rows[0] || {
     default_team: "Customer Support",
@@ -405,8 +413,8 @@ async function getTeamSettings() {
     fallback_action: defaults.fallback_action,
     route_available_only: defaults.route_available_only,
     default_invitation_role: defaults.default_invitation_role,
-    active_members_count: activeCount > 0 ? activeCount : defaults.active_members_count,
-    pending_invites_count: defaults.pending_invites_count,
+    active_members_count: activeCount,
+    pending_invites_count: pendingCount,
     options: {
       teams: ["Customer Support", "Technical Support", "Billing & Account", "VIP Triage"],
       priorities: SUPPORTED_PRIORITIES,
@@ -481,6 +489,93 @@ async function updateTeamSettings(patchData) {
  * 4. NOTIFICATION SETTINGS
  * -----------------------------------------------------------------------------
  */
+// Allowed values and shapes for notification settings
+const EMAIL_DIGEST_VALUES = ["OFF", "DAILY_8AM", "WEEKLY"];
+const HHMM_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function failValidation(errors) {
+  const err = new ApiError(422, "Validation failed");
+  err.errors = errors;
+  throw err;
+}
+
+/**
+ * Validates the optional nested structures of a notification settings patch.
+ * The generic `validate` middleware only supports flat fields, so channels,
+ * quiet_hours and matrix are validated here. Throws 422 with an errors array.
+ */
+function validateNotificationPatch(patchData) {
+  const errors = [];
+
+  if (patchData.channels !== undefined) {
+    const channels = patchData.channels;
+    if (typeof channels !== "object" || channels === null || Array.isArray(channels)) {
+      errors.push({ field: "channels", message: "channels must be an object" });
+    } else {
+      for (const key of ["in_app", "email", "desktop"]) {
+        if (channels[key] !== undefined && typeof channels[key] !== "boolean") {
+          errors.push({ field: `channels.${key}`, message: `channels.${key} must be a boolean` });
+        }
+      }
+    }
+  }
+
+  if (patchData.email_digest !== undefined && !EMAIL_DIGEST_VALUES.includes(patchData.email_digest)) {
+    errors.push({
+      field: "email_digest",
+      message: `email_digest must be one of: ${EMAIL_DIGEST_VALUES.join(", ")}`,
+    });
+  }
+
+  if (patchData.quiet_hours !== undefined) {
+    const quiet = patchData.quiet_hours;
+    if (typeof quiet !== "object" || quiet === null || Array.isArray(quiet)) {
+      errors.push({ field: "quiet_hours", message: "quiet_hours must be an object" });
+    } else {
+      if (quiet.enabled !== undefined && typeof quiet.enabled !== "boolean") {
+        errors.push({ field: "quiet_hours.enabled", message: "quiet_hours.enabled must be a boolean" });
+      }
+      for (const key of ["start", "end"]) {
+        if (quiet[key] !== undefined && (typeof quiet[key] !== "string" || !HHMM_PATTERN.test(quiet[key]))) {
+          errors.push({
+            field: `quiet_hours.${key}`,
+            message: `quiet_hours.${key} must be a time in HH:MM format`,
+          });
+        }
+      }
+    }
+  }
+
+  if (patchData.matrix !== undefined) {
+    const matrix = patchData.matrix;
+    if (!Array.isArray(matrix)) {
+      errors.push({ field: "matrix", message: "matrix must be an array" });
+    } else {
+      matrix.forEach((row, index) => {
+        if (typeof row !== "object" || row === null || Array.isArray(row)) {
+          errors.push({ field: `matrix[${index}]`, message: `matrix[${index}] must be an object` });
+          return;
+        }
+        if (typeof row.id !== "string" || !row.id.trim()) {
+          errors.push({ field: `matrix[${index}].id`, message: `matrix[${index}].id must be a non-empty string` });
+        }
+        for (const key of ["in_app", "email"]) {
+          if (row[key] !== undefined && typeof row[key] !== "boolean") {
+            errors.push({
+              field: `matrix[${index}].${key}`,
+              message: `matrix[${index}].${key} must be a boolean`,
+            });
+          }
+        }
+      });
+    }
+  }
+
+  if (errors.length > 0) {
+    failValidation(errors);
+  }
+}
+
 const DEFAULT_MATRIX = [
   {
     id: "ticket_assigned",
@@ -565,6 +660,11 @@ async function getNotificationSettings(userId) {
 }
 
 async function updateNotificationSettings(userId, patchData) {
+  if (patchData === null || typeof patchData !== "object" || Array.isArray(patchData)) {
+    failValidation([{ field: "_body", message: "Request body must be a JSON object" }]);
+  }
+  validateNotificationPatch(patchData);
+
   const current = await getNotificationSettings(userId);
 
   const channels = {

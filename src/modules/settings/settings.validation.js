@@ -156,3 +156,12 @@ export const patchAiSchema = {
     type: "string",
   },
 };
+
+// POST /settings/profile/2fa — `enabled` is mandatory so an absent field can
+// never silently disable two-factor authentication.
+export const patch2faSchema = {
+  enabled: {
+    type: "boolean",
+    required: true,
+  },
+};
