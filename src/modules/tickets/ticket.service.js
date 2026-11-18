@@ -1,6 +1,7 @@
 import ApiError from "../../utils/ApiError.js";
 import categoryService from "../categories/category.service.js";
 import ticketRepository from "./ticket.repository.js";
+import permissions from "../../utils/permissions.js";
 import {
   TICKET_PRIORITIES,
   TICKET_STATUSES,
@@ -33,37 +34,18 @@ async function validateTicketCategory(categoryId) {
 }
 
 /**
- * Decide whether a user may see/manage a ticket.
- * - CUSTOMER: only tickets they created (ownership)
- * - AGENT:    only tickets currently assigned to them (FR-028)
- * - ADMIN:    every ticket
- *
- * Works on both raw repository rows (`customer_id`, `agent_id`) and mapped
- * detail objects. Uses String() comparison because BIGINT ids arrive as
- * strings from the pg driver.
+ * Decide whether a user may see/manage a ticket. The scope comes from the
+ * configurable "Ticket visibility" permission for the user's role (defaults:
+ * CUSTOMER own tickets, AGENT assigned tickets, ADMIN every ticket), so
+ * Admin changes to the matrix apply to every user of the role immediately.
  *
  * @param {{ id: string|number, role: string }} user
  * @param {{ customer_id?: any, customer?: any, agent_id?: any, assigned_agent?: any }} ticket
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
-function canAccessTicket(user, ticket) {
-  const customerId = String(
-    ticket.customer_id ?? ticket.customer?.id ?? "",
-  );
-  const agentId = String(
-    ticket.agent_id ?? ticket.assigned_agent_id ?? ticket.assigned_agent?.id ?? "",
-  );
-
-  switch (user.role) {
-    case "ADMIN":
-      return true;
-    case "AGENT":
-      return agentId !== "" && agentId === String(user.id);
-    case "CUSTOMER":
-      return customerId === String(user.id);
-    default:
-      return false;
-  }
+async function canAccessTicket(user, ticket) {
+  const scope = await permissions.getTicketScope(user.role, "view_tickets");
+  return permissions.ticketInScope(scope, user, ticket);
 }
 
 /**
@@ -234,13 +216,18 @@ async function listTickets({
   const conditions = [];
   const values = [];
 
-  // Explicit role scope. ADMIN can additionally filter by agent below.
-  if (user.role === "CUSTOMER") {
+  // Data scope comes from the configurable "Ticket visibility" permission.
+  // ADMIN can additionally filter by agent below.
+  const viewScope = await permissions.getTicketScope(user.role, "view_tickets");
+  if (viewScope === "OWN") {
     values.push(user.id);
     conditions.push(`t.customer_id = $${values.length}`);
-  } else if (user.role === "AGENT") {
+  } else if (viewScope === "ASSIGNED") {
     values.push(user.id);
     conditions.push(`t.assigned_agent_id = $${values.length}`);
+  } else if (viewScope === "NONE") {
+    // No visibility configured for this role — return no rows.
+    conditions.push("FALSE");
   }
 
   if (assignedAgentId !== undefined) {
@@ -320,7 +307,7 @@ async function getTicketById(id, user) {
   if (!row) {
     throw new ApiError(404, "Ticket not found.");
   }
-  if (!canAccessTicket(user, row)) {
+  if (!(await canAccessTicket(user, row))) {
     throw new ApiError(403, "Forbidden. You are not authorized to view this ticket.");
   }
 
@@ -350,7 +337,7 @@ async function updateTicket(id, user, data) {
     if (!row) {
       throw new ApiError(404, "Ticket not found.");
     }
-    if (!canAccessTicket(user, row)) {
+    if (!(await canAccessTicket(user, row))) {
       throw new ApiError(403, "Forbidden. You are not authorized to update this ticket.");
     }
     if (row.status === "CLOSED") {
@@ -497,7 +484,17 @@ async function updateTicketStatus(id, user, nextStatus) {
     if (!row) {
       throw new ApiError(404, "Ticket not found.");
     }
-    if (!canAccessTicket(user, row)) {
+
+    // Which tickets this role may transition is governed by the configurable
+    // "Status updates" permission; ownership rules still apply within scope.
+    const statusScope = await permissions.getTicketScope(user.role, "update_status");
+    if (statusScope === "NONE") {
+      throw new ApiError(
+        403,
+        "Forbidden. You do not have permission to change the ticket status.",
+      );
+    }
+    if (!permissions.ticketInScope(statusScope, user, row)) {
       throw new ApiError(403, "Forbidden. You are not authorized to update this ticket.");
     }
     if (row.status === "CLOSED") {
@@ -556,7 +553,10 @@ async function updateTicketStatus(id, user, nextStatus) {
  * @returns {Promise<object>}
  */
 async function updateTicketAssignment(id, user, assignedAgentId) {
-  if (user.role !== "ADMIN") {
+  // Governed by the configurable "Ticket assignment" permission (defaults to
+  // ADMIN only). The route middleware enforces the same rule.
+  const canAssign = await permissions.hasPermission(user.role, "assign_reassign_tickets");
+  if (!canAssign) {
     throw new ApiError(
       403,
       "Forbidden. Only admins can assign or reassign tickets.",
@@ -629,16 +629,17 @@ async function updateTicketAssignment(id, user, assignedAgentId) {
 }
 
 /**
- * Audit history for a ticket. AGENTs only see history of assigned tickets;
- * ADMINs see everything. (Customers are blocked at the route level and
- * defensively here.)
+ * Audit history for a ticket. Governed by the configurable "Ticket history"
+ * permission: the scope decides which tickets a role may inspect (defaults:
+ * ADMIN all tickets, AGENT assigned tickets, CUSTOMER none).
  *
  * @param {string|number} id
  * @param {{ id: string|number, role: string }} user
  * @returns {Promise<Array<object>>}
  */
 async function getTicketHistory(id, user) {
-  if (user.role === "CUSTOMER") {
+  const historyScope = await permissions.getTicketScope(user.role, "ticket_history");
+  if (historyScope === "NONE") {
     throw new ApiError(
       403,
       "Forbidden. Ticket history is only available to support staff.",
@@ -650,7 +651,7 @@ async function getTicketHistory(id, user) {
   if (!row) {
     throw new ApiError(404, "Ticket not found.");
   }
-  if (!canAccessTicket(user, row)) {
+  if (!permissions.ticketInScope(historyScope, user, row)) {
     throw new ApiError(403, "Forbidden. You are not authorized to view this ticket.");
   }
 

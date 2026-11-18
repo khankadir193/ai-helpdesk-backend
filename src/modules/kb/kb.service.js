@@ -40,7 +40,7 @@ export const kbService = {
 
     const stats = {
       publishedCount: Number(s.published_count || 0),
-      publishedThisMonth: '+4 this month',
+      publishedThisMonth: "+4 this month",
       draftCount: Number(s.draft_count || 0),
       reviewCount: Number(s.review_count || 0),
       archivedCount: Number(s.archived_count || 0),
@@ -122,8 +122,8 @@ export const kbService = {
         article_id: row.article_id,
         title: row.title,
         slug: row.slug,
-        category: row.category_name || 'General',
-        author: row.author_name || 'Support Team',
+        category: row.category_name || "General",
+        author: row.author_name || "Support Team",
         status: row.status,
         updated_at: row.updated_at,
       })),
@@ -135,12 +135,12 @@ export const kbService = {
    * List KB articles with search, filtering, sorting and pagination
    */
   listArticles: async ({
-    q = '',
-    status = 'ALL',
+    q = "",
+    status = "ALL",
     categoryId,
     authorId,
-    sort = 'article_id',
-    order = 'asc',
+    sort = "article_id",
+    order = "asc",
     page = 1,
     pageSize = 8,
   } = {}) => {
@@ -149,47 +149,47 @@ export const kbService = {
     const offset = (pageNum - 1) * limit;
 
     // Normalize and validate status enum
-    const VALID_STATUSES = new Set(['PUBLISHED', 'DRAFT', 'IN_REVIEW', 'ARCHIVED']);
-    const normalizedStatus = typeof status === 'string' ? status.trim().toUpperCase() : '';
-    if (normalizedStatus && normalizedStatus !== 'ALL' && !VALID_STATUSES.has(normalizedStatus)) {
+    const VALID_STATUSES = new Set(["PUBLISHED", "DRAFT", "IN_REVIEW", "ARCHIVED"]);
+    const normalizedStatus = typeof status === "string" ? status.trim().toUpperCase() : "";
+    if (normalizedStatus && normalizedStatus !== "ALL" && !VALID_STATUSES.has(normalizedStatus)) {
       throw new ApiError(400, `Invalid status filter "${status}". Expected ALL, PUBLISHED, DRAFT, IN_REVIEW, or ARCHIVED.`);
     }
 
     // Validate authorId if supplied
     let resolvedAuthorId = null;
-    if (authorId !== undefined && authorId !== null && String(authorId).trim() !== '') {
+    if (authorId !== undefined && authorId !== null && String(authorId).trim() !== "") {
       const rawAuthor = String(authorId).trim();
       if (!/^[1-9]\d*$/.test(rawAuthor)) {
-        throw new ApiError(400, 'Invalid authorId. Must be a positive integer.');
+        throw new ApiError(400, "Invalid authorId. Must be a positive integer.");
       }
       resolvedAuthorId = rawAuthor;
     }
 
     // Resolve categoryId as numeric ID, "uncategorized", or category slug
-    let categoryFilterMode = 'none'; // 'none' | 'uncategorized' | 'id' | 'not_found'
+    let categoryFilterMode = "none"; // 'none' | 'uncategorized' | 'id' | 'not_found'
     let resolvedCategoryId = null;
-    if (categoryId !== undefined && categoryId !== null && String(categoryId).trim() !== '') {
+    if (categoryId !== undefined && categoryId !== null && String(categoryId).trim() !== "") {
       const rawCategory = String(categoryId).trim();
-      if (rawCategory.toLowerCase() === 'uncategorized') {
-        categoryFilterMode = 'uncategorized';
+      if (rawCategory.toLowerCase() === "uncategorized") {
+        categoryFilterMode = "uncategorized";
       } else if (/^[1-9]\d*$/.test(rawCategory)) {
-        categoryFilterMode = 'id';
+        categoryFilterMode = "id";
         resolvedCategoryId = rawCategory;
       } else {
         const catRes = await database.query(
-          'SELECT id FROM kb_categories WHERE lower(slug) = lower($1) LIMIT 1',
+          "SELECT id FROM kb_categories WHERE lower(slug) = lower($1) LIMIT 1",
           [rawCategory]
         );
         if (catRes.rows.length > 0) {
-          categoryFilterMode = 'id';
+          categoryFilterMode = "id";
           resolvedCategoryId = catRes.rows[0].id;
         } else {
-          categoryFilterMode = 'not_found';
+          categoryFilterMode = "not_found";
         }
       }
     }
 
-    if (categoryFilterMode === 'not_found') {
+    if (categoryFilterMode === "not_found") {
       return {
         items: [],
         total: 0,
@@ -202,18 +202,18 @@ export const kbService = {
 
     // Shared base WHERE clause (search, category, author) used by both statusCounts and filtered query
     const baseParams = [];
-    let baseWhere = 'WHERE 1=1';
+    let baseWhere = "WHERE 1=1";
 
-    const trimmedQ = typeof q === 'string' ? q.trim() : '';
+    const trimmedQ = typeof q === "string" ? q.trim() : "";
     if (trimmedQ.length > 0) {
       baseParams.push(`%${trimmedQ}%`);
       const pIdx = baseParams.length;
       baseWhere += ` AND (a.title ILIKE $${pIdx} OR a.article_id ILIKE $${pIdx} OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE t ILIKE $${pIdx}))`;
     }
 
-    if (categoryFilterMode === 'uncategorized') {
-      baseWhere += ' AND a.category_id IS NULL';
-    } else if (categoryFilterMode === 'id') {
+    if (categoryFilterMode === "uncategorized") {
+      baseWhere += " AND a.category_id IS NULL";
+    } else if (categoryFilterMode === "id") {
       baseParams.push(resolvedCategoryId);
       baseWhere += ` AND a.category_id = $${baseParams.length}`;
     }
@@ -249,25 +249,25 @@ export const kbService = {
     const values = [...baseParams];
     let whereClause = baseWhere;
 
-    if (normalizedStatus && normalizedStatus !== 'ALL') {
+    if (normalizedStatus && normalizedStatus !== "ALL") {
       values.push(normalizedStatus);
       whereClause += ` AND a.status = $${values.length}`;
     }
 
     // Strict whitelist for sort column and direction
     const sortFieldMap = {
-      article_id: 'a.article_id',
-      title: 'a.title',
-      category: 'c.name',
-      status: 'a.status',
-      author: 'u.name',
-      updated: 'a.updated_at',
-      updated_at: 'a.updated_at',
+      article_id: "a.article_id",
+      title: "a.title",
+      category: "c.name",
+      status: "a.status",
+      author: "u.name",
+      updated: "a.updated_at",
+      updated_at: "a.updated_at",
     };
-    const sortKey = typeof sort === 'string' ? sort.trim().toLowerCase() : 'article_id';
-    const sortCol = Object.hasOwn(sortFieldMap, sortKey) ? sortFieldMap[sortKey] : 'a.article_id';
-    const orderKey = typeof order === 'string' ? order.trim().toLowerCase() : 'asc';
-    const sortDir = orderKey === 'desc' ? 'DESC' : 'ASC';
+    const sortKey = typeof sort === "string" ? sort.trim().toLowerCase() : "article_id";
+    const sortCol = Object.hasOwn(sortFieldMap, sortKey) ? sortFieldMap[sortKey] : "a.article_id";
+    const orderKey = typeof order === "string" ? order.trim().toLowerCase() : "asc";
+    const sortDir = orderKey === "desc" ? "DESC" : "ASC";
 
     // Total count with current filters
     const totalQuery = `
@@ -330,7 +330,7 @@ export const kbService = {
         category_slug: row.category_slug,
         status: row.status,
         visibility: row.visibility,
-        author: row.author_name || 'Support Team',
+        author: row.author_name || "Support Team",
         author_id: row.author_id,
         tags: row.tags || [],
         version: row.published_version,
@@ -395,17 +395,17 @@ export const kbService = {
     const row = res.rows[0];
 
     // Increment view count asynchronously
-    database.query('UPDATE kb_articles SET view_count = view_count + 1 WHERE id = $1', [row.id]).catch(() => {});
+    database.query("UPDATE kb_articles SET view_count = view_count + 1 WHERE id = $1", [row.id]).catch(() => {});
 
     // Check if client has previously submitted helpful feedback
     let userVote = null;
     if (clientIdentifier) {
       const fb = await database.query(
-        'SELECT is_helpful FROM kb_article_feedback WHERE article_id = $1 AND client_identifier = $2',
+        "SELECT is_helpful FROM kb_article_feedback WHERE article_id = $1 AND client_identifier = $2",
         [row.id, clientIdentifier]
       );
       if (fb.rows.length > 0) {
-        userVote = fb.rows[0].is_helpful ? 'yes' : 'no';
+        userVote = fb.rows[0].is_helpful ? "yes" : "no";
       }
     }
 
@@ -423,7 +423,7 @@ export const kbService = {
       category_name: row.category_name,
       category_slug: row.category_slug,
       author_id: row.author_id,
-      author_name: row.author_name || 'Support Team',
+      author_name: row.author_name || "Support Team",
       status: row.status,
       visibility: row.visibility,
       tags: row.tags || [],
@@ -450,12 +450,12 @@ export const kbService = {
    */
   createArticle: async ({
     title,
-    summary = '',
-    content = '',
+    summary = "",
+    content = "",
     category_id,
-    visibility = 'PUBLIC',
+    visibility = "PUBLIC",
     tags = [],
-    status = 'DRAFT',
+    status = "DRAFT",
     author_id,
   }) => {
     // Determine next unique KB article ID
@@ -473,11 +473,11 @@ export const kbService = {
     // Normalize tags
     const normalizedTags = Array.isArray(tags)
       ? tags
-      : typeof tags === 'string'
-      ? tags.split(',').map((t) => t.trim()).filter(Boolean)
+      : typeof tags === "string"
+      ? tags.split(",").map((t) => t.trim()).filter(Boolean)
       : [];
 
-    const isPublished = status === 'PUBLISHED';
+    const isPublished = status === "PUBLISHED";
     const now = new Date().toISOString();
 
     const res = await database.query(
@@ -533,19 +533,19 @@ export const kbService = {
     if (data.tags !== undefined) {
       normalizedTags = Array.isArray(data.tags)
         ? data.tags
-        : typeof data.tags === 'string'
-        ? data.tags.split(',').map((t) => t.trim()).filter(Boolean)
+        : typeof data.tags === "string"
+        ? data.tags.split(",").map((t) => t.trim()).filter(Boolean)
         : [];
     }
 
     const title = data.title !== undefined ? data.title.trim() : existing.title;
-    const summary = data.summary !== undefined ? (data.summary ? data.summary.trim() : '') : existing.summary;
+    const summary = data.summary !== undefined ? (data.summary ? data.summary.trim() : "") : existing.summary;
     const content = data.content !== undefined ? data.content : existing.content;
     const category_id = data.category_id !== undefined ? data.category_id : existing.category_id;
     const visibility = data.visibility !== undefined ? data.visibility : existing.visibility;
     const author_id = data.author_id !== undefined ? data.author_id : existing.author_id;
 
-    if (existing.status === 'PUBLISHED') {
+    if (existing.status === "PUBLISHED") {
       // Editing an already published article creates / updates draft revision
       const nextDraftVersion = existing.has_draft_revision
         ? existing.draft_version
@@ -623,7 +623,7 @@ export const kbService = {
     const summaryToPublish = existing.has_draft_revision ? existing.draft_summary : existing.summary;
     const contentToPublish = existing.has_draft_revision ? existing.draft_content : existing.content;
 
-    const newVersion = existing.status === 'PUBLISHED' && existing.has_draft_revision
+    const newVersion = existing.status === "PUBLISHED" && existing.has_draft_revision
       ? existing.draft_version
       : existing.published_version;
 
@@ -678,7 +678,7 @@ export const kbService = {
    */
   deleteArticle: async (identifier) => {
     const existing = await kbService.getArticleByIdentifier(identifier);
-    await database.query('DELETE FROM kb_articles WHERE id = $1', [existing.id]);
+    await database.query("DELETE FROM kb_articles WHERE id = $1", [existing.id]);
     return { success: true, message: `Article ${existing.article_id} deleted successfully.` };
   },
 
@@ -687,44 +687,44 @@ export const kbService = {
    */
   voteFeedback: async (identifier, { helpful, clientIdentifier, userId }) => {
     const existing = await kbService.getArticleByIdentifier(identifier);
-    const clientId = clientIdentifier || `user-${userId || 'anon'}`;
+    const clientId = clientIdentifier || `user-${userId || "anon"}`;
 
     // Check if already voted
     const existingVote = await database.query(
-      'SELECT is_helpful FROM kb_article_feedback WHERE article_id = $1 AND client_identifier = $2',
+      "SELECT is_helpful FROM kb_article_feedback WHERE article_id = $1 AND client_identifier = $2",
       [existing.id, clientId]
     );
 
     if (existingVote.rows.length > 0) {
       const prevHelpful = existingVote.rows[0].is_helpful;
       if (prevHelpful === helpful) {
-        return { success: true, message: 'Vote already recorded.', userVote: helpful ? 'yes' : 'no' };
+        return { success: true, message: "Vote already recorded.", userVote: helpful ? "yes" : "no" };
       }
       // Update vote direction
       await database.query(
-        'UPDATE kb_article_feedback SET is_helpful = $1, created_at = now() WHERE article_id = $2 AND client_identifier = $3',
+        "UPDATE kb_article_feedback SET is_helpful = $1, created_at = now() WHERE article_id = $2 AND client_identifier = $3",
         [helpful, existing.id, clientId]
       );
       if (helpful) {
         await database.query(
-          'UPDATE kb_articles SET helpful_yes = helpful_yes + 1, helpful_no = GREATEST(0, helpful_no - 1) WHERE id = $1',
+          "UPDATE kb_articles SET helpful_yes = helpful_yes + 1, helpful_no = GREATEST(0, helpful_no - 1) WHERE id = $1",
           [existing.id]
         );
       } else {
         await database.query(
-          'UPDATE kb_articles SET helpful_no = helpful_no + 1, helpful_yes = GREATEST(0, helpful_yes - 1) WHERE id = $1',
+          "UPDATE kb_articles SET helpful_no = helpful_no + 1, helpful_yes = GREATEST(0, helpful_yes - 1) WHERE id = $1",
           [existing.id]
         );
       }
     } else {
       await database.query(
-        'INSERT INTO kb_article_feedback (article_id, user_id, client_identifier, is_helpful) VALUES ($1, $2, $3, $4)',
+        "INSERT INTO kb_article_feedback (article_id, user_id, client_identifier, is_helpful) VALUES ($1, $2, $3, $4)",
         [existing.id, userId || null, clientId, helpful]
       );
       if (helpful) {
-        await database.query('UPDATE kb_articles SET helpful_yes = helpful_yes + 1 WHERE id = $1', [existing.id]);
+        await database.query("UPDATE kb_articles SET helpful_yes = helpful_yes + 1 WHERE id = $1", [existing.id]);
       } else {
-        await database.query('UPDATE kb_articles SET helpful_no = helpful_no + 1 WHERE id = $1', [existing.id]);
+        await database.query("UPDATE kb_articles SET helpful_no = helpful_no + 1 WHERE id = $1", [existing.id]);
       }
     }
 
@@ -792,17 +792,17 @@ export const kbService = {
   /**
    * Create KB category
    */
-  createCategory: async ({ name, description = '', icon = 'book-open', owner_id = null }) => {
+  createCategory: async ({ name, description = "", icon = "book-open", owner_id = null }) => {
     const trimmedName = name.trim();
     const slug = slugify(trimmedName);
 
     // Check duplicate
-    const checkDup = await database.query('SELECT id FROM kb_categories WHERE lower(name) = lower($1)', [trimmedName]);
+    const checkDup = await database.query("SELECT id FROM kb_categories WHERE lower(name) = lower($1)", [trimmedName]);
     if (checkDup.rows.length > 0) {
       throw new ApiError(409, `Category "${trimmedName}" already exists.`);
     }
 
-    const orderRes = await database.query('SELECT COALESCE(max(display_order), 0) + 1 as next_order FROM kb_categories');
+    const orderRes = await database.query("SELECT COALESCE(max(display_order), 0) + 1 as next_order FROM kb_categories");
     const display_order = orderRes.rows[0].next_order;
 
     const ins = await database.query(
@@ -819,19 +819,19 @@ export const kbService = {
    * Update category
    */
   updateCategory: async (id, data) => {
-    const existing = await database.query('SELECT * FROM kb_categories WHERE id = $1', [id]);
+    const existing = await database.query("SELECT * FROM kb_categories WHERE id = $1", [id]);
     if (existing.rows.length === 0) {
       throw new ApiError(404, `Category not found: ${id}`);
     }
 
     const name = data.name !== undefined ? data.name.trim() : existing.rows[0].name;
     const slug = slugify(name);
-    const description = data.description !== undefined ? (data.description ? data.description.trim() : '') : existing.rows[0].description;
+    const description = data.description !== undefined ? (data.description ? data.description.trim() : "") : existing.rows[0].description;
     const icon = data.icon !== undefined ? data.icon : existing.rows[0].icon;
     const owner_id = data.owner_id !== undefined ? data.owner_id : existing.rows[0].owner_id;
 
     if (name.toLowerCase() !== existing.rows[0].name.toLowerCase()) {
-      const checkDup = await database.query('SELECT id FROM kb_categories WHERE lower(name) = lower($1) AND id != $2', [name, id]);
+      const checkDup = await database.query("SELECT id FROM kb_categories WHERE lower(name) = lower($1) AND id != $2", [name, id]);
       if (checkDup.rows.length > 0) {
         throw new ApiError(409, `Category "${name}" already exists.`);
       }
@@ -864,12 +864,12 @@ export const kbService = {
    */
   reorderCategories: async (orderedIds) => {
     if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
-      throw new ApiError(400, 'orderedIds must be a non-empty array of category IDs.');
+      throw new ApiError(400, "orderedIds must be a non-empty array of category IDs.");
     }
 
     for (let index = 0; index < orderedIds.length; index++) {
       await database.query(
-        'UPDATE kb_categories SET display_order = $1, updated_at = now() WHERE id = $2',
+        "UPDATE kb_categories SET display_order = $1, updated_at = now() WHERE id = $2",
         [index + 1, orderedIds[index]]
       );
     }
@@ -882,7 +882,7 @@ export const kbService = {
    */
   deleteCategory: async (id) => {
     const articlesCheck = await database.query(
-      'SELECT count(*)::int as count FROM kb_articles WHERE category_id = $1',
+      "SELECT count(*)::int as count FROM kb_articles WHERE category_id = $1",
       [id]
     );
     const count = articlesCheck.rows[0]?.count || 0;
@@ -890,8 +890,8 @@ export const kbService = {
       throw new ApiError(400, `Cannot delete category: ${count} articles still belong to it. Move its articles to another category first.`);
     }
 
-    await database.query('DELETE FROM kb_categories WHERE id = $1', [id]);
-    return { success: true, message: 'Category deleted successfully.' };
+    await database.query("DELETE FROM kb_categories WHERE id = $1", [id]);
+    return { success: true, message: "Category deleted successfully." };
   },
 
   /**
@@ -919,10 +919,10 @@ export const kbService = {
    * Generate AI suggestion for article draft
    */
   generateAiSuggestion: async ({ title, summary, content }) => {
-    const contextText = `Title: ${title}\nSummary: ${summary}\nContent snippet: ${(content || '').replace(/<[^>]*>/g, ' ').slice(0, 800)}`;
+    const contextText = `Title: ${title}\nSummary: ${summary}\nContent snippet: ${(content || "").replace(/<[^>]*>/g, " ").slice(0, 800)}`;
 
     try {
-      if (aiProvider && typeof aiProvider.generateText === 'function') {
+      if (aiProvider && typeof aiProvider.generateText === "function") {
         const prompt = `You are an expert technical writer and customer support documentation specialist. Analyze the following knowledge base article draft and return ONE crisp, actionable suggestion (1-2 sentences) to improve its clarity, safety, or completeness for customers.\n\n${contextText}\n\nReturn ONLY the suggestion text, with no preamble or quotes.`;
         const res = await aiProvider.generateText(prompt);
         if (res && res.trim()) {
@@ -951,21 +951,21 @@ export const kbService = {
    */
   exportCsv: async (filters) => {
     const data = await kbService.listArticles({ ...filters, page: 1, pageSize: 1000 });
-    const escapeCsv = (val) => `"${String(val ?? '').replace(/"/g, '""')}"`;
+    const escapeCsv = (val) => `"${String(val ?? "").replace(/"/g, "\"\"")}"`;
 
-    const headers = ['Article ID', 'Title', 'Category', 'Status', 'Author', 'Tags', 'Published Date', 'Last Updated'];
+    const headers = ["Article ID", "Title", "Category", "Status", "Author", "Tags", "Published Date", "Last Updated"];
     const rows = data.items.map((item) => [
       escapeCsv(item.article_id),
       escapeCsv(item.title),
       escapeCsv(item.category),
       escapeCsv(item.status),
       escapeCsv(item.author),
-      escapeCsv((item.tags || []).join(', ')),
-      escapeCsv(item.published_at ? new Date(item.published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '–'),
-      escapeCsv(item.updated_at ? new Date(item.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '–'),
+      escapeCsv((item.tags || []).join(", ")),
+      escapeCsv(item.published_at ? new Date(item.published_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "–"),
+      escapeCsv(item.updated_at ? new Date(item.updated_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "–"),
     ]);
 
-    return [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
+    return [headers.join(","), ...rows.map((r) => r.join(","))].join("\r\n");
   },
 };
 

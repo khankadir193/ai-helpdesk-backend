@@ -1,6 +1,6 @@
 import express from "express";
 import authenticate from "../../middleware/authenticate.js";
-import authorize from "../../middleware/authorize.js";
+import authorizePermission from "../../middleware/authorizePermission.js";
 import validate from "../../middleware/validate.js";
 import ticketController from "./ticket.controller.js";
 import {
@@ -20,10 +20,11 @@ const router = express.Router();
 // Enforce authentication on all ticket endpoints
 router.use(authenticate);
 
-// POST / - Customer creates a ticket
+// POST / - Ticket creation, governed by the configurable "Ticket creation"
+// permission (defaults: CUSTOMER allowed, AGENT/ADMIN not allowed).
 router.post(
   "/",
-  authorize("CUSTOMER"),
+  authorizePermission("create_tickets"),
   validate(createTicketSchema, createTicketOptions),
   ticketController.createTicket
 );
@@ -42,28 +43,31 @@ router.patch(
   ticketController.updateTicket
 );
 
-// PATCH /:id/status - Agent (assigned) or admin changes ticket status
+// PATCH /:id/status - governed by the configurable "Status updates"
+// permission; per-ticket ownership scoping is enforced in the service.
 router.patch(
   "/:id/status",
-  authorize("AGENT", "ADMIN"),
+  authorizePermission("update_status"),
   validateTicketId,
   validate(updateStatusSchema, updateStatusOptions),
   ticketController.updateTicketStatus
 );
 
-// PATCH /:id/assignment - Admin assigns/unassigns the ticket to an agent
+// PATCH /:id/assignment - governed by the configurable "Ticket assignment"
+// permission (default: ADMIN only). Targets are validated in the service.
 router.patch(
   "/:id/assignment",
-  authorize("ADMIN"),
+  authorizePermission("assign_reassign_tickets"),
   validateTicketId,
   validate(updateAssignmentSchema, updateAssignmentOptions),
   ticketController.updateTicketAssignment
 );
 
-// GET /:id/history - Audit trail (agent scoped to assigned tickets; admin all)
+// GET /:id/history - governed by the configurable "Ticket history"
+// permission; per-ticket scoping is enforced in the service.
 router.get(
   "/:id/history",
-  authorize("AGENT", "ADMIN"),
+  authorizePermission("ticket_history"),
   validateTicketId,
   ticketController.getTicketHistory
 );

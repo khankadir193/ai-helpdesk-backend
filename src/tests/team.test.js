@@ -270,8 +270,9 @@ test("GET /team/roles returns matrix and permissions", async () => {
   assert.equal(data.can_edit, true);
   assert.ok(data.admin_contact);
   assert.ok(Array.isArray(data.roles));
+  assert.deepEqual(data.roles.map((r) => r.id), ["ADMIN", "AGENT", "CUSTOMER"]);
   assert.ok(Array.isArray(data.permissions));
-  assert.equal(data.permissions.length, 9);
+  assert.equal(data.permissions.length, 13);
 });
 
 test("PATCH /team/roles blocks non-admins (403)", async () => {
@@ -329,7 +330,7 @@ test("GET /team/teams returns available teams", async () => {
 test("GET /team/invite-options returns role options", async () => {
   const res = await request("/team/invite-options", { cookie: adminCookie });
   assert.equal(res.status, 200);
-  assert.deepEqual(res.data.data.assignable_roles, ["AGENT", "MANAGER", "ADMIN"]);
+  assert.deepEqual(res.data.data.assignable_roles, ["AGENT", "ADMIN"]);
 });
 
 test("POST /team/invitations validates email and rejects duplicates", async () => {

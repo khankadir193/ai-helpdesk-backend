@@ -4,7 +4,7 @@ import aiProvider from "./ai.provider.js";
 import categoryService from "../categories/category.service.js";
 import commentService from "../comments/comment.service.js";
 import ticketRepository from "../tickets/ticket.repository.js";
-import ticketService from "../tickets/ticket.service.js";
+import permissions from "../../utils/permissions.js";
 import { TICKET_PRIORITIES } from "../tickets/ticket.validation.js";
 
 const CLASSIFICATION_SUGGESTION_TYPE = "CLASSIFICATION";
@@ -570,14 +570,40 @@ function validateSummaryResponse(content) {
 }
 
 /**
+ * Ticket access for AI tools. Governed by the configurable "AI tools"
+ * permission: the scope decides which tickets a role may run AI operations
+ * on (defaults: ADMIN all tickets, AGENT assigned tickets, CUSTOMER none).
+ * The ticket row and user id come from PostgreSQL — never from the request.
+ *
+ * @param {object} row — raw ticket row
+ * @param {{ id: string|number, role: string }} user
+ * @returns {Promise<void>} throws 403 when access is denied
+ */
+async function assertAiTicketAccess(row, user) {
+  const scope = await permissions.getTicketScope(user.role, "ai_tools");
+  if (scope === "NONE") {
+    throw new ApiError(
+      403,
+      "Forbidden. You do not have permission to use AI tools.",
+    );
+  }
+  if (!permissions.ticketInScope(scope, user, row)) {
+    throw new ApiError(
+      403,
+      "Forbidden. You are not authorized to access this ticket.",
+    );
+  }
+}
+
+/**
  * Classify a ticket with an AI provider and store the suggestion.
  *
- * Authorization: AGENT (assigned tickets only) or ADMIN (all). The ticket,
- * its active category names, and the id of the acting user are resolved from
- * PostgreSQL — never from the request body. The suggestion is stored in
- * ai_suggestions with status PENDING. The ticket row itself is NEVER
- * modified: category, priority, status, and assignment all require an
- * explicit human action (docs/07).
+ * Authorization: AGENT (assigned tickets only) or ADMIN (all), per the
+ * "AI tools" permission. The ticket, its active category names, and the id
+ * of the acting user are resolved from PostgreSQL — never from the request
+ * body. The suggestion is stored in ai_suggestions with status PENDING. The
+ * ticket row itself is NEVER modified: category, priority, status, and
+ * assignment all require an explicit human action (docs/07).
  *
  * @param {string|number} ticketId — validated positive integer (route level)
  * @param {{ id: string|number, role: string }} user
@@ -589,12 +615,7 @@ async function classifyTicket(ticketId, user) {
   if (!row) {
     throw new ApiError(404, "Ticket not found.");
   }
-  if (!ticketService.canAccessTicket(user, row)) {
-    throw new ApiError(
-      403,
-      "Forbidden. You are not authorized to access this ticket.",
-    );
-  }
+  await assertAiTicketAccess(row, user);
 
   // Active categories for the classifier. Non-admin roles always receive
   // active-only categories, which is exactly what prompt/whitelist need.
@@ -656,12 +677,7 @@ async function suggestTicketPriority(ticketId, user) {
   if (!row) {
     throw new ApiError(404, "Ticket not found.");
   }
-  if (!ticketService.canAccessTicket(user, row)) {
-    throw new ApiError(
-      403,
-      "Forbidden. You are not authorized to access this ticket.",
-    );
-  }
+  await assertAiTicketAccess(row, user);
 
   // Guard against empty input (docs/07 — AI input is untrusted too). A
   // degraded or hand-migrated row with blank text must fail safely instead
@@ -727,12 +743,7 @@ async function generateReplyDraft(ticketId, user) {
   if (!row) {
     throw new ApiError(404, "Ticket not found.");
   }
-  if (!ticketService.canAccessTicket(user, row)) {
-    throw new ApiError(
-      403,
-      "Forbidden. You are not authorized to access this ticket.",
-    );
-  }
+  await assertAiTicketAccess(row, user);
 
   // Guard against empty input (docs/07 — AI input is untrusted too), same
   // blank-row protection as the priority suggestion.
@@ -804,12 +815,7 @@ async function generateSummary(ticketId, user) {
   if (!row) {
     throw new ApiError(404, "Ticket not found.");
   }
-  if (!ticketService.canAccessTicket(user, row)) {
-    throw new ApiError(
-      403,
-      "Forbidden. You are not authorized to access this ticket.",
-    );
-  }
+  await assertAiTicketAccess(row, user);
 
   // Guard against empty input (docs/07 — AI input is untrusted too), same
   // blank-row protection as the priority suggestion and reply draft.

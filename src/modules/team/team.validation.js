@@ -5,7 +5,7 @@ import ApiError from "../../utils/ApiError.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export const VALID_ROLES = ["ADMIN", "MANAGER", "AGENT"];
+export const VALID_ROLES = ["ADMIN", "AGENT"];
 
 /**
  * Validate email string format.
@@ -29,7 +29,7 @@ export function validateInvitePayload(body) {
 
   const role = body.role ? String(body.role).toUpperCase().trim() : "AGENT";
   if (!VALID_ROLES.includes(role)) {
-    throw new ApiError(400, "Invalid role selected. Must be Admin, Manager, or Support Agent.");
+    throw new ApiError(400, "Invalid role selected. Must be Admin or Support Agent.");
   }
 
   const team = body.team ? String(body.team).trim() : "General support";
@@ -56,6 +56,11 @@ export function validateRequestChangePayload(body) {
 
 /**
  * Validate roles matrix update payload.
+ *
+ * Role values are optional — the service keeps the stored value (or the
+ * catalog default) for anything omitted, so a partial payload can never
+ * wipe an existing configuration. The ADMIN value is locked server-side
+ * (team.service.updateRolesAndPermissions rejects changes with 422).
  */
 export function validateUpdateRolesPayload(body) {
   if (!body.permissions || !Array.isArray(body.permissions)) {
@@ -68,9 +73,9 @@ export function validateUpdateRolesPayload(body) {
     }
     return {
       id: p.id.trim(),
-      admin_value: p.values?.ADMIN || p.admin_value || "Allowed",
-      manager_value: p.values?.MANAGER || p.manager_value || "Not allowed",
-      agent_value: p.values?.AGENT || p.agent_value || "Not allowed",
+      admin_value: p.values?.ADMIN ?? p.admin_value,
+      agent_value: p.values?.AGENT ?? p.agent_value,
+      customer_value: p.values?.CUSTOMER ?? p.customer_value,
     };
   });
 

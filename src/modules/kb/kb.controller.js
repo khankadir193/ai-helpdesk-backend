@@ -26,7 +26,7 @@ export const kbController = {
     const { q, status, categoryId, authorId } = req.query;
     const csv = await kbService.exportCsv({ q, status, categoryId, authorId });
     res.setHeader("Content-Type", "text/csv");
-    res.setHeader("Content-Disposition", 'attachment; filename="kb-articles.csv"');
+    res.setHeader("Content-Disposition", "attachment; filename=\"kb-articles.csv\"");
     res.status(200).send(csv);
   }),
 

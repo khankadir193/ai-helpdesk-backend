@@ -1,5 +1,6 @@
 import database from "../../config/database.js";
 import ApiError from "../../utils/ApiError.js";
+import permissions from "../../utils/permissions.js";
 
 /**
  * SLA resolution targets by ticket priority (hours).
@@ -320,7 +321,7 @@ async function getAgentPerformance(from, to, agentId) {
   );
 
   const { rows: totalAgentsRows } = await database.query(
-    `SELECT COUNT(*)::int AS count FROM users WHERE role = 'AGENT' AND is_active = TRUE`
+    "SELECT COUNT(*)::int AS count FROM users WHERE role = 'AGENT' AND is_active = TRUE"
   );
   const totalAgentsInDb = toInt(totalAgentsRows[0]?.count) || 8;
 
@@ -377,16 +378,21 @@ function getCustomerSatisfaction() {
 
 /**
  * GET /api/v1/reports/analytics
+ *
+ * Governed by the configurable "Reports & analytics" permission:
+ *   - 'Workspace' scope: all data; the caller may filter by agent_id.
+ *   - 'Own performance' scope: restricted to the caller's own data.
  */
 async function getAnalytics(user, query = {}) {
-  if (!["ADMIN", "AGENT"].includes(user.role)) {
-    throw new ApiError(403, "Reports are only accessible to agents and admins.");
+  const scope = await permissions.getReportScope(user.role);
+  if (scope === "NONE") {
+    throw new ApiError(403, "You do not have permission to view reports.");
   }
 
   const { from, to } = parseDateRange(query);
 
   let agentId = null;
-  if (user.role === "AGENT") {
+  if (scope === "OWN") {
     agentId = Number(user.id);
   } else if (query.agent_id) {
     agentId = parseInt(query.agent_id, 10);

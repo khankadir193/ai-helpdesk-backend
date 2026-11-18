@@ -2,6 +2,7 @@ import database from "../../config/database.js";
 import ApiError from "../../utils/ApiError.js";
 import ticketService from "../tickets/ticket.service.js";
 import ticketRepository from "../tickets/ticket.repository.js";
+import permissions from "../../utils/permissions.js";
 
 /**
  * Serialize a joined comment row into the public API shape.
@@ -61,7 +62,7 @@ async function assertTicketAccess(ticketId, user) {
   if (!ticket) {
     throw new ApiError(404, "Ticket not found.");
   }
-  if (!ticketService.canAccessTicket(user, ticket)) {
+  if (!(await ticketService.canAccessTicket(user, ticket))) {
     throw new ApiError(
       403,
       "Forbidden. You are not authorized to access this ticket.",
@@ -127,10 +128,12 @@ async function listCustomerVisibleComments(ticketId, executor = database) {
 }
 
 /**
- * Add a comment (reply) to a ticket. Customer and agent comments are
- * permitted on any ticket they can access (FR-012 / FR-023); admins may
- * comment anywhere.
- * Customers cannot create internal comments — `is_internal: true` is a 403.
+ * Add a comment (reply) to a ticket. Which tickets a role may reply on is
+ * governed by the configurable "Ticket replies" permission (defaults:
+ * ADMIN all tickets, AGENT assigned tickets, CUSTOMER own tickets).
+ * Creating internal notes is governed by the "Internal notes" permission
+ * (defaults: AGENT/ADMIN allowed, CUSTOMER not allowed) — `is_internal: true`
+ * without it is a 403.
  *
  * @param {string|number} ticketId
  * @param {{ id: string|number, role: string }} user
@@ -143,14 +146,31 @@ async function addComment(ticketId, user, { message, is_internal = false }) {
     throw new ApiError(422, "Comment message cannot be empty.");
   }
 
-  if (Boolean(is_internal) && user.role === "CUSTOMER") {
+  if (Boolean(is_internal) && !(await permissions.hasPermission(user.role, "internal_notes"))) {
     throw new ApiError(
       403,
-      "Forbidden. Customers cannot create internal comments.",
+      "Forbidden. You do not have permission to create internal comments.",
     );
   }
 
-  const ticket = await assertTicketAccess(ticketId, user);
+  const replyScope = await permissions.getTicketScope(user.role, "reply_tickets");
+  if (replyScope === "NONE") {
+    throw new ApiError(
+      403,
+      "Forbidden. You do not have permission to reply to tickets.",
+    );
+  }
+
+  const ticket = await ticketRepository.findTicketById(ticketId);
+  if (!ticket) {
+    throw new ApiError(404, "Ticket not found.");
+  }
+  if (!permissions.ticketInScope(replyScope, user, ticket)) {
+    throw new ApiError(
+      403,
+      "Forbidden. You are not authorized to reply to this ticket.",
+    );
+  }
 
   const { rows } = await database.query(
     `INSERT INTO ticket_comments (ticket_id, author_id, message, is_internal)

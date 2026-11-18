@@ -1,9 +1,9 @@
 import express from "express";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import authenticate from "../../middleware/authenticate.js";
-import authorize from "../../middleware/authorize.js";
 import validate from "../../middleware/validate.js";
 import settingsController from "./settings.controller.js";
+import authorizePermission from "../../middleware/authorizePermission.js";
 import {
   patchWorkspaceSchema,
   patchProfileSchema,
@@ -40,13 +40,14 @@ const sensitiveActionRateLimit = rateLimit({
 router.use(authenticate);
 
 // ---------------------------------------------------------------------------
-// 1. Workspace settings
+// 1. Workspace settings — mutations governed by the configurable
+//    billing_security_settings permission (ADMIN value locked to "Allowed").
 // ---------------------------------------------------------------------------
 router.get("/workspace", settingsController.getWorkspace);
 router.get("/workspace/check-url", settingsController.checkWorkspaceUrl);
 router.patch(
   "/workspace",
-  authorize("ADMIN"),
+  authorizePermission("billing_security_settings"),
   validate(patchWorkspaceSchema, { disallowEmpty: true }),
   settingsController.patchWorkspace
 );
@@ -85,7 +86,7 @@ router.post("/sessions/revoke-others", settingsController.revokeOtherSessions);
 router.get("/team", settingsController.getTeam);
 router.patch(
   "/team",
-  authorize("ADMIN"),
+  authorizePermission("billing_security_settings"),
   validate(patchTeamSchema, { disallowEmpty: true }),
   settingsController.patchTeam
 );
@@ -103,7 +104,7 @@ router.get("/ai", settingsController.getAi);
 router.get("/ai/preview", settingsController.getAiPreview);
 router.patch(
   "/ai",
-  authorize("ADMIN"),
+  authorizePermission("billing_security_settings"),
   validate(patchAiSchema, { disallowEmpty: true }),
   settingsController.patchAi
 );

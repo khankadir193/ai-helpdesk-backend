@@ -5,6 +5,12 @@
 import database from "../../config/database.js";
 import ApiError from "../../utils/ApiError.js";
 import { sendInvitationEmail } from "../../utils/mailer.js";
+import {
+  DEFAULT_PERMISSIONS_CONFIG,
+  PERMISSION_IDS,
+  PERMISSION_OPTIONS,
+  hasPermission,
+} from "../../utils/permissions.js";
 
 const SLA_MET_EXPR = `(
   (t.priority = 'URGENT' AND EXTRACT(EPOCH FROM (t.resolved_at - t.created_at)) / 3600 <= 4)  OR
@@ -343,18 +349,12 @@ async function exportTeamPerformanceCsv(user, query = {}) {
 
 /**
  * 3. Roles & Permissions Matrix
+ *
+ * Defaults live in utils/permissions.js (shared with the enforcement
+ * middleware authorizePermission). Stored values (team_role_permissions)
+ * always win over defaults, so every Admin account sees the same saved
+ * matrix and every user of a role is affected by its values.
  */
-const DEFAULT_PERMISSIONS_CONFIG = [
-  { id: "view_reply_tickets", name: "View & reply to tickets", default_values: { ADMIN: "All tickets", MANAGER: "Team tickets", AGENT: "Assigned tickets" } },
-  { id: "assign_reassign_tickets", name: "Assign & reassign tickets", default_values: { ADMIN: "All teams", MANAGER: "Own team", AGENT: "Self only" } },
-  { id: "delete_tickets", name: "Delete tickets", default_values: { ADMIN: "Allowed", MANAGER: "Not allowed", AGENT: "Not allowed" } },
-  { id: "publish_kb", name: "Publish knowledge articles", default_values: { ADMIN: "Allowed", MANAGER: "Allowed", AGENT: "Draft only" } },
-  { id: "view_reports", name: "View reports & export data", default_values: { ADMIN: "Workspace", MANAGER: "Own team", AGENT: "Own performance" } },
-  { id: "invite_members", name: "Invite members", default_values: { ADMIN: "Any role", MANAGER: "Support Agent only", AGENT: "Not allowed" } },
-  { id: "deactivate_members", name: "Deactivate members", default_values: { ADMIN: "Allowed", MANAGER: "Not allowed", AGENT: "Not allowed" } },
-  { id: "edit_roles_permissions", name: "Edit roles & permissions", default_values: { ADMIN: "Allowed", MANAGER: "Not allowed", AGENT: "Not allowed" } },
-  { id: "billing_security_settings", name: "Billing, security & settings", default_values: { ADMIN: "Allowed", MANAGER: "Not allowed", AGENT: "Not allowed" } },
-];
 
 async function getRolesAndPermissions(user) {
   const canEdit = user.role === "ADMIN";
@@ -370,14 +370,14 @@ async function getRolesAndPermissions(user) {
 
   // Fetch matrix from DB
   const { rows: matrixRows } = await database.query(
-    "SELECT permission_id, admin_value, manager_value, agent_value FROM team_role_permissions",
+    "SELECT permission_id, admin_value, agent_value, customer_value FROM team_role_permissions",
   );
   const matrixMap = new Map();
   for (const row of matrixRows) {
     matrixMap.set(row.permission_id, {
       ADMIN: row.admin_value,
-      MANAGER: row.manager_value,
       AGENT: row.agent_value,
+      CUSTOMER: row.customer_value,
     });
   }
 
@@ -388,16 +388,16 @@ async function getRolesAndPermissions(user) {
       name: cfg.name,
       values: {
         ADMIN: saved?.ADMIN || cfg.default_values.ADMIN,
-        MANAGER: saved?.MANAGER || cfg.default_values.MANAGER,
         AGENT: saved?.AGENT || cfg.default_values.AGENT,
+        CUSTOMER: saved?.CUSTOMER || cfg.default_values.CUSTOMER,
       },
     };
   });
 
   const roles = [
     { id: "ADMIN", name: "Admin", subtitle: "Full workspace access" },
-    { id: "MANAGER", name: "Manager", subtitle: "Team management" },
     { id: "AGENT", name: "Support Agent", subtitle: "Day-to-day support" },
+    { id: "CUSTOMER", name: "Customer", subtitle: "Help seeker access" },
   ];
 
   return {
@@ -411,33 +411,121 @@ async function getRolesAndPermissions(user) {
 
 /**
  * 4. Update Roles & Permissions (Admin only)
+ *
+ * The change is GLOBAL: values are stored per role in the database, so they
+ * apply to every existing and newly created user with that role. All Admin
+ * accounts share one configuration, and the enforcement middleware
+ * (authorizePermission) re-resolves the matrix on every request.
+ *
+ * ADMIN values are locked: an Admin may configure AGENT and CUSTOMER, but
+ * the ADMIN column always keeps its stored value (or the catalog default
+ * when no row exists yet). Any attempt to change an ADMIN value — which
+ * includes stripping essential privileges like 'Edit roles & permissions'
+ * or 'Billing, security & settings' — is rejected with 422, protecting
+ * against administrator lockout and privilege escalation.
+ *
+ * Submitted role values must be part of the permission's option vocabulary
+ * (PERMISSION_OPTIONS) and ids must be part of the canonical catalogue, so
+ * the stored matrix always stays machine-interpretable for the engine.
+ *
+ * The legacy manager_value column is preserved untouched (the MANAGER role
+ * is not part of the product's three-role model).
  */
+const DEFAULTS_BY_ID = new Map(
+  DEFAULT_PERMISSIONS_CONFIG.map((cfg) => [cfg.id, cfg.default_values]),
+);
+
+/** User-facing messages for permissions that can never be revoked from ADMIN. */
+const ADMIN_LOCK_MESSAGES = {
+  billing_security_settings:
+    "Cannot revoke 'Billing, security & settings' from the Admin role.",
+  edit_roles_permissions:
+    "Cannot revoke 'Edit roles & permissions' from the Admin role.",
+};
+
+function isValidPermissionValue(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 async function updateRolesAndPermissions(user, permissions) {
   if (user.role !== "ADMIN") {
     throw new ApiError(403, "Only Admins can change workspace permissions.");
   }
 
-  // Safety protection: verify that critical admin capabilities are not stripped
+  // Reject unknown permission ids outright (fail closed).
   for (const perm of permissions) {
-    if (perm.id === "billing_security_settings" && perm.admin_value !== "Allowed") {
-      throw new ApiError(422, "Cannot revoke 'Billing, security & settings' from the Admin role.");
+    if (!PERMISSION_IDS.includes(perm.id)) {
+      throw new ApiError(422, `Unknown permission "${perm.id}".`);
     }
-    if (perm.id === "edit_roles_permissions" && perm.admin_value !== "Allowed") {
-      throw new ApiError(422, "Cannot revoke 'Edit roles & permissions' from the Admin role.");
+  }
+
+  // Load stored rows once — the stored ADMIN value is authoritative and locked.
+  const { rows: storedRows } = await database.query(
+    "SELECT permission_id, admin_value, manager_value, agent_value, customer_value FROM team_role_permissions",
+  );
+  const storedMap = new Map(storedRows.map((row) => [row.permission_id, row]));
+
+  for (const perm of permissions) {
+    const stored = storedMap.get(perm.id);
+    const effectiveAdmin =
+      stored?.admin_value || DEFAULTS_BY_ID.get(perm.id)?.ADMIN || "Allowed";
+
+    // Lockout protection: reject ANY change to the ADMIN column.
+    if (
+      isValidPermissionValue(perm.admin_value) &&
+      perm.admin_value !== effectiveAdmin
+    ) {
+      const message =
+        ADMIN_LOCK_MESSAGES[perm.id] ??
+        "Admin permissions are locked and cannot be modified.";
+      throw new ApiError(422, message);
+    }
+
+    // Role values must stay inside the option vocabulary of the permission.
+    for (const [label, value] of [
+      ["AGENT", perm.agent_value],
+      ["CUSTOMER", perm.customer_value],
+    ]) {
+      const options = PERMISSION_OPTIONS[perm.id] || [];
+      if (isValidPermissionValue(value) && !options.includes(value)) {
+        throw new ApiError(
+          422,
+          `Invalid value "${value}" for permission "${perm.id}" (${label}).`,
+        );
+      }
     }
   }
 
   // Upsert into team_role_permissions
   for (const perm of permissions) {
+    const stored = storedMap.get(perm.id);
+    const adminValue =
+      stored?.admin_value || DEFAULTS_BY_ID.get(perm.id)?.ADMIN || "Allowed";
+    // Missing role values keep their stored value, then the catalog default,
+    // so a partial payload can never wipe an existing configuration.
+    const agentValue = isValidPermissionValue(perm.agent_value)
+      ? perm.agent_value
+      : stored?.agent_value ||
+        DEFAULTS_BY_ID.get(perm.id)?.AGENT ||
+        "Not allowed";
+    const customerValue = isValidPermissionValue(perm.customer_value)
+      ? perm.customer_value
+      : stored?.customer_value ||
+        DEFAULTS_BY_ID.get(perm.id)?.CUSTOMER ||
+        "Not allowed";
+    // Legacy column: keep whatever is stored; neutral default for new rows.
+    const managerValue = stored?.manager_value || "Not allowed";
+
     await database.query(
-      `INSERT INTO team_role_permissions (permission_id, admin_value, manager_value, agent_value, updated_at)
-       VALUES ($1, $2, $3, $4, now())
+      `INSERT INTO team_role_permissions
+         (permission_id, admin_value, manager_value, agent_value, customer_value, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now())
        ON CONFLICT (permission_id) DO UPDATE SET
          admin_value = EXCLUDED.admin_value,
-         manager_value = EXCLUDED.manager_value,
          agent_value = EXCLUDED.agent_value,
+         customer_value = EXCLUDED.customer_value,
          updated_at = now()`,
-      [perm.id, perm.admin_value, perm.manager_value, perm.agent_value],
+      [perm.id, adminValue, managerValue, agentValue, customerValue],
     );
   }
 
@@ -477,15 +565,24 @@ async function getTeams() {
 
 /**
  * 7. Get Invite Options
+ *
+ * Member management is a configurable permission (matrix: invite_members).
+ * Admins always qualify (their ADMIN value is locked to an allowed value);
+ * other roles qualify only when an Admin has granted them the permission.
+ * Granted non-admin inviters may only invite SUPPORT AGENTs — inviting an
+ * Admin is reserved for Admins (privilege-escalation guard).
  */
+async function canInviteMembers(user) {
+  return hasPermission(user.role, "invite_members");
+}
+
 async function getInviteOptions(user) {
-  if (user.role !== "ADMIN" && user.role !== "MANAGER") {
+  if (!(await canInviteMembers(user))) {
     throw new ApiError(403, "You do not have permission to invite workspace members.");
   }
 
-  const assignableRoles = user.role === "ADMIN"
-    ? ["AGENT", "MANAGER", "ADMIN"]
-    : ["AGENT"];
+  const isAdmin = user.role === "ADMIN";
+  const assignableRoles = isAdmin ? ["AGENT", "ADMIN"] : ["AGENT"];
 
   const roles = [
     {
@@ -496,20 +593,13 @@ async function getInviteOptions(user) {
       admin_only: false,
     },
     {
-      id: "MANAGER",
-      name: "Manager",
-      title: "Manager",
-      description: "Manage team workloads and view team reports.",
-      admin_only: true,
-    },
-    {
       id: "ADMIN",
       name: "Admin",
       title: "Admin",
       description: "Full access, including billing and workspace security.",
       admin_only: true,
     },
-  ];
+  ].filter((role) => isAdmin || role.id !== "ADMIN");
 
   return {
     assignable_roles: assignableRoles,
@@ -522,12 +612,14 @@ async function getInviteOptions(user) {
  * 8. Create Invitation
  */
 async function createInvitation(user, { email, role, team }) {
-  if (user.role !== "ADMIN" && user.role !== "MANAGER") {
+  if (!(await canInviteMembers(user))) {
     throw new ApiError(403, "You do not have permission to invite workspace members.");
   }
 
-  if (user.role === "MANAGER" && role !== "AGENT") {
-    throw new ApiError(403, "Managers can only invite Support Agents. Ask an Admin for elevated access.");
+  // Privilege-escalation guard: only Admins may invite Admins.
+  const isAdmin = user.role === "ADMIN";
+  if (!isAdmin && role !== "AGENT") {
+    throw new ApiError(403, "Only Admins can invite workspace Admins.");
   }
 
   // Pre-check 1: Is user already a member?
@@ -596,7 +688,7 @@ async function listMembers(_user, query = {}) {
 
   const trimmedSearch = typeof query.q === "string" ? query.q.trim() : "";
   const memberParams = [];
-  let memberWhere = "WHERE u.role IN ('ADMIN', 'MANAGER', 'AGENT') AND u.is_active = TRUE";
+  let memberWhere = "WHERE u.role IN ('ADMIN', 'AGENT') AND u.is_active = TRUE";
   if (trimmedSearch) {
     memberParams.push(`%${trimmedSearch}%`);
     memberWhere += " AND (u.name ILIKE $1 OR u.email ILIKE $1 OR u.role ILIKE $1)";
@@ -614,7 +706,7 @@ async function listMembers(_user, query = {}) {
   const page = Math.min(pageNum, totalPages);
   const offset = (page - 1) * limit;
 
-  // Query active team members (ADMIN, MANAGER, AGENT) for the requested page
+  // Query active team members (ADMIN, AGENT) for the requested page
   const { rows: memberRows } = await database.query(
     `SELECT
        u.id::text,
@@ -626,7 +718,6 @@ async function listMembers(_user, query = {}) {
        COALESCE(up.job_title,
          CASE
            WHEN u.role = 'ADMIN' THEN 'Support Director'
-           WHEN u.role = 'MANAGER' THEN 'Customer Support Manager'
            ELSE 'Customer Support Specialist'
          END
        ) AS job_title
@@ -634,7 +725,7 @@ async function listMembers(_user, query = {}) {
      LEFT JOIN user_profiles up ON up.user_id = u.id
      ${memberWhere}
      ORDER BY
-       CASE u.role WHEN 'ADMIN' THEN 1 WHEN 'MANAGER' THEN 2 ELSE 3 END,
+       CASE u.role WHEN 'ADMIN' THEN 1 ELSE 2 END,
        lower(u.name) ASC,
        u.id ASC
      LIMIT $${memberParams.length + 1} OFFSET $${memberParams.length + 2}`,
@@ -690,7 +781,7 @@ function isNumericId(value) {
  * reporting the real delivery outcome.
  */
 async function resendInvitation(user, invitationId) {
-  if (user.role !== "ADMIN" && user.role !== "MANAGER") {
+  if (!(await canInviteMembers(user))) {
     throw new ApiError(403, "You do not have permission to manage invitations.");
   }
 
@@ -726,7 +817,7 @@ async function resendInvitation(user, invitationId) {
  * 11. Revoke Invitation
  */
 async function revokeInvitation(user, invitationId) {
-  if (user.role !== "ADMIN" && user.role !== "MANAGER") {
+  if (!(await canInviteMembers(user))) {
     throw new ApiError(403, "You do not have permission to manage invitations.");
   }
 

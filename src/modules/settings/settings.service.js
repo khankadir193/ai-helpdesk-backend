@@ -139,7 +139,7 @@ async function checkWorkspaceUrl(urlRaw, currentWorkspaceId = "ws_acme_001") {
 async function getUserProfile(userId) {
   const { rows } = await database.query(
     `SELECT u.id, u.name, u.email, u.role, u.created_at,
-            COALESCE(up.job_title, 'Customer Support Manager') AS job_title,
+            COALESCE(up.job_title, 'Customer Support Specialist') AS job_title,
             up.avatar_url,
             COALESCE(up.password_changed_at, u.created_at) AS password_changed_at,
             COALESCE(up.two_factor_enabled, true) AS two_factor_enabled,
@@ -382,9 +382,9 @@ async function getTeamSettings() {
   `);
 
   // Count team members with the same filter as the Team tab (team.service listMembers):
-  // active ADMIN/MANAGER/AGENT users only — customers are not members.
+  // active ADMIN/AGENT users only — customers are not members.
   const { rows: memberRows } = await database.query(
-    "SELECT COUNT(*)::int AS count FROM users WHERE role IN ('ADMIN', 'MANAGER', 'AGENT') AND is_active = TRUE"
+    "SELECT COUNT(*)::int AS count FROM users WHERE role IN ('ADMIN', 'AGENT') AND is_active = TRUE"
   );
   const activeCount = parseInt(memberRows[0]?.count, 10) || 0;
 

@@ -1,6 +1,6 @@
 import express from "express";
 import authenticate from "../../middleware/authenticate.js";
-import authorize from "../../middleware/authorize.js";
+import authorizePermission from "../../middleware/authorizePermission.js";
 import reportsController from "./reports.controller.js";
 
 const router = express.Router();
@@ -11,11 +11,13 @@ router.use(authenticate);
 /**
  * GET /api/v1/reports/analytics
  * Returns aggregated analytics for the given date range.
- * Accessible to AGENT (own data only) and ADMIN (all data, optional agent filter).
+ * Governed by the configurable "Reports & analytics" permission:
+ * 'Workspace' scope sees all data (with an optional agent filter),
+ * 'Own performance' scope is restricted to the caller's own data.
  */
 router.get(
   "/analytics",
-  authorize("AGENT", "ADMIN"),
+  authorizePermission("view_reports"),
   reportsController.getAnalytics,
 );
 
