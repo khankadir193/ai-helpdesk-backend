@@ -63,28 +63,40 @@ function parseDateRange(query) {
  */
 async function getTeamPerformance(user, query = {}) {
   const { from, to } = parseDateRange(query);
+  const ownScope = user.role === "AGENT";
 
   // 1. Live Workload Counts (consistent with Dashboard)
-  const { rows: workloadRows } = await database.query(`
-    SELECT
-      COUNT(*)::int AS open_tickets,
-      COUNT(*) FILTER (WHERE t.assigned_agent_id IS NULL)::int AS unassigned,
-      COUNT(*) FILTER (WHERE t.status = 'IN_PROGRESS')::int AS in_progress
-    FROM tickets t
-    WHERE t.status IN ('OPEN', 'IN_PROGRESS')
-  `);
+  const workloadScope = ownScope ? "AND t.assigned_agent_id = $1" : "";
+  const { rows: workloadRows } = await database.query(
+    `SELECT
+       COUNT(*)::int AS open_tickets,
+       COUNT(*) FILTER (WHERE t.assigned_agent_id IS NULL)::int AS unassigned,
+       COUNT(*) FILTER (WHERE t.status = 'IN_PROGRESS')::int AS in_progress
+     FROM tickets t
+     WHERE t.status IN ('OPEN', 'IN_PROGRESS')
+     ${workloadScope}`,
+    ownScope ? [user.id] : [],
+  );
 
-  const openTickets = toInt(workloadRows[0]?.open_tickets) || 128;
-  const unassignedTickets = toInt(workloadRows[0]?.unassigned) || 17;
-  const inProgressTickets = toInt(workloadRows[0]?.in_progress) || 54;
+  const openTickets = toInt(workloadRows[0]?.open_tickets);
+  const unassignedTickets = toInt(workloadRows[0]?.unassigned);
+  const inProgressTickets = toInt(workloadRows[0]?.in_progress);
+
+  // Every period query is scoped the same way: ADMIN sees the workspace,
+  // an AGENT sees only tickets assigned to them.
+  const p = [from, to];
+  const scopeClause = ownScope
+    ? `AND t.assigned_agent_id = $${p.push(user.id)}`
+    : "";
 
   // 2. Resolved tickets in period
   const { rows: resolvedRows } = await database.query(
     `SELECT COUNT(*)::int AS count
      FROM tickets t
      WHERE t.status IN ('RESOLVED', 'CLOSED')
-       AND t.resolved_at >= $1 AND t.resolved_at <= $2`,
-    [from, to],
+       AND t.resolved_at >= $1 AND t.resolved_at <= $2
+       ${scopeClause}`,
+    p,
   );
 
   // 3. Avg resolution time in hours
@@ -92,8 +104,9 @@ async function getTeamPerformance(user, query = {}) {
     `SELECT AVG(EXTRACT(EPOCH FROM (t.resolved_at - t.created_at)) / 3600) AS avg_hours
      FROM tickets t
      WHERE t.resolved_at IS NOT NULL
-       AND t.resolved_at >= $1 AND t.resolved_at <= $2`,
-    [from, to],
+       AND t.resolved_at >= $1 AND t.resolved_at <= $2
+       ${scopeClause}`,
+    p,
   );
 
   // 4. Avg first response time in hours
@@ -107,10 +120,11 @@ async function getTeamPerformance(user, query = {}) {
        JOIN ticket_comments c ON c.ticket_id = t.id
        JOIN users u            ON u.id = c.author_id AND u.role != 'CUSTOMER'
        WHERE t.created_at >= $1 AND t.created_at <= $2
+         ${scopeClause}
        GROUP BY t.id, t.assigned_agent_id
      ) sub
      WHERE first_resp_seconds >= 0`,
-    [from, to],
+    p,
   );
 
   // 5. SLA compliance
@@ -120,20 +134,21 @@ async function getTeamPerformance(user, query = {}) {
        COUNT(*)::int AS total_resolved
      FROM tickets t
      WHERE t.resolved_at IS NOT NULL
-       AND t.resolved_at >= $1 AND t.resolved_at <= $2`,
-    [from, to],
+       AND t.resolved_at >= $1 AND t.resolved_at <= $2
+       ${scopeClause}`,
+    p,
   );
 
-  const withinTarget = toInt(slaRows[0]?.within_target) || 300;
-  const totalResolved = toInt(slaRows[0]?.total_resolved) || 312;
-  const resolvedCount = toInt(resolvedRows[0]?.count) || 312;
-  const slaPct = totalResolved > 0 ? Math.round((withinTarget / totalResolved) * 100) : 96;
+  const withinTarget = toInt(slaRows[0]?.within_target);
+  const totalResolved = toInt(slaRows[0]?.total_resolved);
+  const resolvedCount = toInt(resolvedRows[0]?.count);
+  const slaPct = totalResolved > 0 ? Math.round((withinTarget / totalResolved) * 100) : null;
 
   // Active agents count
   const { rows: agentCountRows } = await database.query(
     "SELECT COUNT(*)::int AS count FROM users WHERE role = 'AGENT' AND is_active = TRUE",
   );
-  const totalActiveAgents = toInt(agentCountRows[0]?.count) || 8;
+  const totalActiveAgents = toInt(agentCountRows[0]?.count);
 
   // 6. Throughput grouped daily series
   const { rows: throughputRows } = await database.query(
@@ -146,6 +161,7 @@ async function getTeamPerformance(user, query = {}) {
        SELECT DATE(t.created_at) AS day, COUNT(*)::int AS created
        FROM tickets t
        WHERE t.created_at >= $1 AND t.created_at <= $2
+       ${scopeClause}
        GROUP BY DATE(t.created_at)
      ) c ON c.day = d.day::date
      LEFT JOIN (
@@ -153,37 +169,18 @@ async function getTeamPerformance(user, query = {}) {
        FROM tickets t
        WHERE t.resolved_at IS NOT NULL
          AND t.resolved_at >= $1 AND t.resolved_at <= $2
+       ${scopeClause}
        GROUP BY DATE(t.resolved_at)
      ) r ON r.day = d.day::date
      ORDER BY d.day`,
-    [from, to],
+    p,
   );
 
-  let throughput = throughputRows.map((r) => ({
+  const throughput = throughputRows.map((r) => ({
     date: r.date,
     created: r.created,
     resolved: r.resolved,
   }));
-
-  const hasThroughputData = throughput.some((t) => t.created > 0 || t.resolved > 0);
-  let isDemo = false;
-  if (!hasThroughputData && throughput.length > 0) {
-    isDemo = true;
-    const sampleSeries = [
-      { created: 55, resolved: 46 },
-      { created: 60, resolved: 50 },
-      { created: 50, resolved: 43 },
-      { created: 65, resolved: 56 },
-      { created: 57, resolved: 49 },
-      { created: 35, resolved: 36 },
-      { created: 31, resolved: 32 },
-    ];
-    throughput = throughput.map((item, idx) => ({
-      date: item.date,
-      created: sampleSeries[idx % sampleSeries.length].created,
-      resolved: sampleSeries[idx % sampleSeries.length].resolved,
-    }));
-  }
 
   // 7. Per-agent performance metrics
   const { rows: agentPerfRows } = await database.query(
@@ -234,12 +231,14 @@ async function getTeamPerformance(user, query = {}) {
      LEFT JOIN agent_open ao ON ao.assigned_agent_id = u.id
      LEFT JOIN agent_res_time art ON art.assigned_agent_id = u.id
      WHERE u.role = 'AGENT' AND u.is_active = TRUE
+     ${ownScope ? "AND u.id = $3" : ""}
      GROUP BY u.id, u.name, ao.open_count, aar.avg_first_resp_hours, art.avg_res_hours
+     HAVING COUNT(t.id) > 0
      ORDER BY COUNT(t.id) FILTER (WHERE t.status IN ('RESOLVED','CLOSED')) DESC, u.name ASC`,
-    [from, to],
+    p,
   );
 
-  let agents = agentPerfRows.map((r) => {
+  const agents = agentPerfRows.map((r) => {
     const resolvedWithSla = toInt(r.resolved_with_sla);
     const slaMet = toInt(r.sla_met_count);
     return {
@@ -254,27 +253,14 @@ async function getTeamPerformance(user, query = {}) {
     };
   });
 
-  if (agents.length === 0 || agents.every((a) => a.resolved === 0 && a.open_now === 0)) {
-    isDemo = true;
-    agents = [
-      { agent_id: "1", agent_name: "Maya Chen",   open_now: 18, resolved: 42, avg_first_response_hours: 0.183, avg_resolution_hours: 3.75, sla_met_pct: 98,  csat_avg: 4.8 },
-      { agent_id: "2", agent_name: "Priya Nair",  open_now: 16, resolved: 35, avg_first_response_hours: 0.150, avg_resolution_hours: 3.33, sla_met_pct: 100, csat_avg: 4.9 },
-      { agent_id: "3", agent_name: "Liam Park",   open_now: 22, resolved: 38, avg_first_response_hours: 0.233, avg_resolution_hours: 4.17, sla_met_pct: 95,  csat_avg: 4.6 },
-      { agent_id: "4", agent_name: "Jonas Weber", open_now: 20, resolved: 29, avg_first_response_hours: 0.300, avg_resolution_hours: 4.83, sla_met_pct: 92,  csat_avg: 4.5 },
-    ];
-  }
-
-  // Agents shown to the user: when live data is displayed use the real
-  // active-agent count (list length equals it — same filter); when
-  // illustrative agents are injected keep the reference fallback (min 8).
-  const totalAgentsCount = isDemo
-    ? Math.max(totalActiveAgents, 8)
-    : Math.max(totalActiveAgents, agents.length);
+  // AGENT callers see a single-agent report (themselves); ADMIN callers see
+  // the active-agent count for the workspace.
+  const totalAgentsCount = ownScope ? 1 : totalActiveAgents;
 
   const kpis = {
     resolved_tickets: resolvedCount,
-    avg_first_response_hours: toFloat(frRows[0]?.avg_hours) ?? 0.211, // ~12m 40s
-    avg_resolution_hours: toFloat(resTimeRows[0]?.avg_hours) ?? 4.083, // ~4h 05m
+    avg_first_response_hours: toFloat(frRows[0]?.avg_hours),
+    avg_resolution_hours: toFloat(resTimeRows[0]?.avg_hours),
     sla_compliance_pct: slaPct,
     sla_within_target: withinTarget,
     sla_total_resolved: totalResolved,
@@ -296,9 +282,8 @@ async function getTeamPerformance(user, query = {}) {
     meta: {
       total_agents: totalAgentsCount,
       active_agents: agents.length,
-      meta_text: `${agents.length} of ${totalAgentsCount} agents${isDemo ? " · Illustrative data" : ""}`,
-      is_illustrative: isDemo,
-      footnote: "SLA = resolved within the configured target. CSAT is the average customer rating out of 5; no live measurements are shown.",
+      meta_text: `${agents.length} of ${totalAgentsCount} agents`,
+      footnote: "SLA = resolved within the configured target. Customer satisfaction ratings are not collected in this workspace.",
     },
   };
 }
@@ -316,7 +301,6 @@ async function exportTeamPerformanceCsv(user, query = {}) {
     "First response",
     "Resolution",
     "SLA met",
-    "CSAT / 5",
   ];
 
   const escapeCsv = (val) => {
@@ -341,7 +325,6 @@ async function exportTeamPerformanceCsv(user, query = {}) {
     escapeCsv(formatHrs(agent.avg_first_response_hours)),
     escapeCsv(formatHrs(agent.avg_resolution_hours)),
     escapeCsv(agent.sla_met_pct != null ? `${agent.sla_met_pct}%` : "–"),
-    escapeCsv(agent.csat_avg != null ? agent.csat_avg.toFixed(1) : "–"),
   ]);
 
   return [headers.map(escapeCsv).join(","), ...rows.map((r) => r.join(","))].join("\r\n");

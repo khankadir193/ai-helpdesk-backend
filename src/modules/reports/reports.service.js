@@ -143,23 +143,24 @@ async function getKpis(from, to, agentId) {
   const totalResolved = toInt(slaRows[0]?.total_resolved);
   const slaPct = totalResolved > 0
     ? Math.round((withinTarget / totalResolved) * 100)
-    : 96; // fallback when sample DB has empty resolution history
+    : null;
 
-  const openCount       = toInt(openRows[0]?.count) || 128;
-  const unassignedCount = toInt(openRows[0]?.unassigned) || 17;
-  const inProgressCount = toInt(openRows[0]?.in_progress) || 54;
-  const resolvedCount   = toInt(resolvedRows[0]?.count) || 312;
+  const openCount       = toInt(openRows[0]?.count);
+  const unassignedCount = toInt(openRows[0]?.unassigned);
+  const inProgressCount = toInt(openRows[0]?.in_progress);
+  const resolvedCount   = toInt(resolvedRows[0]?.count);
 
   return {
     open_tickets:            openCount,
     unassigned_tickets:      unassignedCount,
     in_progress_tickets:     inProgressCount,
     resolved_tickets:        resolvedCount,
-    avg_first_response_hours: toFloat(frRows[0]?.avg_hours) ?? 0.211, // ~12m 40s
-    avg_resolution_hours:     toFloat(resTimeRows[0]?.avg_hours) ?? 4.083, // ~4h 05m
+    avg_first_response_hours: toFloat(frRows[0]?.avg_hours),
+    avg_resolution_hours:     toFloat(resTimeRows[0]?.avg_hours),
     sla_compliance_pct:       slaPct,
-    csat_avg:                 4.8,
-    csat_responses:           200,
+    // Customer satisfaction ratings are not stored in the schema yet.
+    csat_avg:                 null,
+    csat_responses:           0,
     backlog_summary: {
       open:        openCount,
       unassigned:  unassignedCount,
@@ -200,33 +201,11 @@ async function getTicketVolume(from, to, agentId) {
     p,
   );
 
-  let volume = rows.map((row) => ({
+  const volume = rows.map((row) => ({
     date:     row.date,
     created:  row.created,
     resolved: row.resolved,
   }));
-
-  // If DB returns all 0s (empty development database), provide sample distribution matching reference
-  const hasData = volume.some((v) => v.created > 0 || v.resolved > 0);
-  if (!hasData && volume.length > 0) {
-    const sampleWeights = [
-      { created: 55, resolved: 46 },
-      { created: 60, resolved: 50 },
-      { created: 50, resolved: 43 },
-      { created: 65, resolved: 56 },
-      { created: 57, resolved: 49 },
-      { created: 35, resolved: 36 },
-      { created: 31, resolved: 32 },
-    ];
-    volume = volume.map((v, i) => {
-      const sample = sampleWeights[i % sampleWeights.length];
-      return {
-        date: v.date,
-        created: sample.created,
-        resolved: sample.resolved,
-      };
-    });
-  }
 
   const totalCreated  = volume.reduce((sum, v) => sum + v.created, 0);
   const totalResolved = volume.reduce((sum, v) => sum + v.resolved, 0);
@@ -257,12 +236,12 @@ async function getSlaBreakdown(from, to, agentId) {
     p,
   );
 
-  const withinTarget   = toInt(rows[0]?.within_target) || 300;
-  const breachedTarget = toInt(rows[0]?.breached_target) || 12;
-  const totalResolved  = toInt(rows[0]?.total_resolved) || 312;
+  const withinTarget   = toInt(rows[0]?.within_target);
+  const breachedTarget = toInt(rows[0]?.breached_target);
+  const totalResolved  = toInt(rows[0]?.total_resolved);
   const percentage     = totalResolved > 0
     ? Math.round((withinTarget / totalResolved) * 100)
-    : 96;
+    : null;
 
   return {
     percentage,
@@ -315,6 +294,7 @@ async function getAgentPerformance(from, to, agentId) {
      WHERE u.role = 'AGENT' AND u.is_active = TRUE
      ${agentClause}
      GROUP BY u.id, u.name, aar.avg_first_resp_hours
+     HAVING COUNT(t.id) > 0
      ORDER BY COUNT(t.id) FILTER (WHERE t.status IN ('RESOLVED','CLOSED')) DESC NULLS LAST,
               u.name ASC`,
     p,
@@ -323,9 +303,9 @@ async function getAgentPerformance(from, to, agentId) {
   const { rows: totalAgentsRows } = await database.query(
     "SELECT COUNT(*)::int AS count FROM users WHERE role = 'AGENT' AND is_active = TRUE"
   );
-  const totalAgentsInDb = toInt(totalAgentsRows[0]?.count) || 8;
+  const totalAgentsInDb = toInt(totalAgentsRows[0]?.count);
 
-  let agents = rows.map((row) => {
+  const agents = rows.map((row) => {
     const resolvedWithSla = toInt(row.resolved_with_sla);
     const slaMet          = toInt(row.sla_met_count);
     return {
@@ -340,39 +320,26 @@ async function getAgentPerformance(from, to, agentId) {
     };
   });
 
-  // If no performance records yet in dev database, provide illustrative team records matching design
-  if (agents.length === 0 || agents.every((a) => a.resolved === 0)) {
-    agents = [
-      { agent_id: "1", agent_name: "Maya Chen",   resolved: 42, avg_first_response_hours: 0.183, sla_met_pct: 98,  csat_avg: 4.8 },
-      { agent_id: "2", agent_name: "Priya Nair",   resolved: 35, avg_first_response_hours: 0.150, sla_met_pct: 100, csat_avg: 4.9 },
-      { agent_id: "3", agent_name: "Liam Park",    resolved: 38, avg_first_response_hours: 0.233, sla_met_pct: 95,  csat_avg: 4.6 },
-      { agent_id: "4", agent_name: "Jonas Weber",  resolved: 29, avg_first_response_hours: 0.300, sla_met_pct: 92,  csat_avg: 4.5 },
-    ];
-  }
-
   return {
     agents,
-    total_agents: totalAgentsInDb > agents.length ? totalAgentsInDb : 8,
-    meta_text: `${agents.length} of ${totalAgentsInDb > agents.length ? totalAgentsInDb : 8} agents · Illustrative data`,
+    total_agents: totalAgentsInDb,
+    meta_text: `${agents.length} of ${totalAgentsInDb} agents`,
   };
 }
 
 /**
  * Customer satisfaction data breakdown (5 stars down to 1 star).
+ * No ratings are stored in the schema, so the API reports the feature as
+ * unavailable instead of returning sample scores.
  */
 function getCustomerSatisfaction() {
   return {
-    average: 4.8,
+    available: false,
+    average: null,
     max_rating: 5,
-    total_responses: 200,
-    distribution: [
-      { stars: 5, count: 168 },
-      { stars: 4, count: 24 },
-      { stars: 3, count: 6 },
-      { stars: 2, count: 2 },
-      { stars: 1, count: 0 },
-    ],
-    note: "Y: rating · X: responses (0–200). Sample only.",
+    total_responses: 0,
+    distribution: [],
+    note: "Customer satisfaction ratings are not collected in this workspace.",
   };
 }
 

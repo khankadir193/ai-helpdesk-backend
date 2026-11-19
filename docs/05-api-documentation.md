@@ -881,13 +881,30 @@ default 20), applied to `recent_tickets` (newest first).
       "total_tickets": 123,
       "status_counts": { "OPEN": 10, "IN_PROGRESS": 5, "RESOLVED": 8, "CLOSED": 100 },
       "priority_counts": { "LOW": 20, "MEDIUM": 80, "HIGH": 18, "URGENT": 5 },
+      "unassigned_count": 7,
+      "avg_first_response_hours": 0.62,
+      "avg_resolution_hours": 0.64,
+      "ticket_volume": {
+        "days": [
+          { "date": "2026-11-12", "created": 3, "resolved": 0 },
+          { "date": "2026-11-13", "created": 47, "resolved": 5 },
+          { "date": "2026-11-14", "created": 0, "resolved": 0 },
+          { "date": "2026-11-15", "created": 0, "resolved": 0 },
+          { "date": "2026-11-16", "created": 0, "resolved": 0 },
+          { "date": "2026-11-17", "created": 59, "resolved": 8 },
+          { "date": "2026-11-18", "created": 7, "resolved": 2 }
+        ],
+        "total_created": 116,
+        "total_resolved": 15
+      },
       "category_counts": [
         { "category_id": "3", "category_name": "Billing", "count": 60 },
         { "category_id": null, "category_name": null, "count": 2 }
       ],
       "agent_workload": [
         { "agent_id": "12", "agent_name": "Alex", "total_assigned": 8,
-          "open": 2, "in_progress": 3, "resolved": 2, "closed": 1 }
+          "open": 2, "in_progress": 3, "resolved": 2, "closed": 1,
+          "avg_first_response_hours": 0.15 }
       ],
       "recent_tickets": [ { "id": "120", "title": "...", "status": "OPEN", "...": "same shape as GET /tickets" } ],
       "pagination": { "page": 1, "limit": 20, "total_items": 123, "total_pages": 7 }
@@ -901,6 +918,15 @@ default 20), applied to `recent_tickets` (newest first).
 admin-only `category_counts` / `agent_workload` sections, and with
 `recent_tickets` / all counts scoped to the caller's tickets (assigned for
 agents, created for customers).
+
+`unassigned_count` counts only `OPEN` / `IN_PROGRESS` tickets without an
+assignee (it is therefore always `0` for agents). `avg_first_response_hours`
+is measured from ticket creation to the first comment written by a
+non-customer and is `null` when no ticket in scope has a reply.
+`avg_resolution_hours` is measured from creation to `resolved_at`
+(`RESOLVED` and `CLOSED` tickets carry it) and is `null` when none exist.
+`ticket_volume.days` always contains seven UTC calendar days, zero-filled,
+ending with today; the two totals are the sums of those buckets.
 
 **Errors:** `401` unauthenticated, `400` invalid `page`/`limit`, `403`
 unexpected role, `500` database failure (generic envelope). The dashboard

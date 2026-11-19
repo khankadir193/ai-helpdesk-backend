@@ -413,6 +413,24 @@ test("admin dashboard aggregates the whole table (status/priority)", async () =>
   const prioritySum = PRIORITY_KEYS.reduce((s, k) => s + expectedPriority[k], 0);
   assert.equal(dashboard.total_tickets, statusSum);
   assert.equal(statusSum, prioritySum);
+
+  // Aggregate fields used by the dashboard KPI cards and volume chart.
+  assert.equal(typeof dashboard.unassigned_count, "number");
+  assert.ok(dashboard.unassigned_count >= 0);
+  assert.ok(
+    dashboard.avg_first_response_hours === null ||
+      typeof dashboard.avg_first_response_hours === "number",
+  );
+  assert.ok(
+    dashboard.avg_resolution_hours === null ||
+      typeof dashboard.avg_resolution_hours === "number",
+  );
+  assert.equal(dashboard.ticket_volume.days.length, 7);
+  for (const day of dashboard.ticket_volume.days) {
+    assert.match(day.date, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(typeof day.created, "number");
+    assert.equal(typeof day.resolved, "number");
+  }
 });
 
 test("admin dashboard includes category counts with uncategorized grouping", async () => {
@@ -471,6 +489,7 @@ test("admin dashboard includes agent workload including zero-count agents", asyn
     in_progress: 1, // t3
     resolved: 1, // t4
     closed: 0,
+    avg_first_response_hours: null, // no comments in the fixtures
   });
 
   const agent2 = workloadFor(agent2User.id);
@@ -482,6 +501,7 @@ test("admin dashboard includes agent workload including zero-count agents", asyn
     in_progress: 0,
     resolved: 0,
     closed: 1, // t6
+    avg_first_response_hours: null,
   });
 
   const agent3 = workloadFor(agent3User.id);
@@ -494,6 +514,7 @@ test("admin dashboard includes agent workload including zero-count agents", asyn
     in_progress: 0,
     resolved: 0,
     closed: 0,
+    avg_first_response_hours: null,
   });
 
   for (const entry of dashboard.agent_workload) {
@@ -579,6 +600,24 @@ test("agent dashboard covers exactly the assigned tickets in all statuses", asyn
     total_pages: 1,
   });
 
+  // Backlog and computed KPIs are scoped to the caller as well.
+  assert.equal(dashboard.unassigned_count, 0);
+  assert.equal(dashboard.avg_first_response_hours, null);
+  assert.ok(typeof dashboard.avg_resolution_hours === "number");
+  assert.equal(dashboard.ticket_volume.days.length, 7);
+  assert.equal(
+    dashboard.ticket_volume.days.reduce((sum, day) => sum + day.created, 0),
+    4,
+    "all four fixture tickets were created inside the seven-day window",
+  );
+  assert.equal(
+    dashboard.ticket_volume.days.reduce((sum, day) => sum + day.resolved, 0),
+    1,
+    "only t4 was resolved inside the seven-day window",
+  );
+  assert.equal(dashboard.ticket_volume.total_created, 4);
+  assert.equal(dashboard.ticket_volume.total_resolved, 1);
+
   // Admin-only sections must not leak into agent dashboards.
   assert.equal(dashboard.category_counts, undefined);
   assert.equal(dashboard.agent_workload, undefined);
@@ -644,6 +683,20 @@ test("customer dashboard covers exactly their own tickets", async () => {
       tickets.t1.id,
     ],
   );
+  assert.equal(dashboard.unassigned_count, 1); // t5 only
+  assert.equal(dashboard.avg_first_response_hours, null);
+  assert.ok(typeof dashboard.avg_resolution_hours === "number");
+  assert.equal(dashboard.ticket_volume.days.length, 7);
+  assert.equal(
+    dashboard.ticket_volume.days.reduce((sum, day) => sum + day.created, 0),
+    6,
+  );
+  assert.equal(
+    dashboard.ticket_volume.days.reduce((sum, day) => sum + day.resolved, 0),
+    2, // t4 resolved + t6 closed (resolved_at is stamped on close)
+  );
+  assert.equal(dashboard.ticket_volume.total_created, 6);
+  assert.equal(dashboard.ticket_volume.total_resolved, 2);
   assert.equal(dashboard.category_counts, undefined);
   assert.equal(dashboard.agent_workload, undefined);
 });
@@ -661,6 +714,16 @@ test("customers cannot see other customers' ticket statistics", async () => {
     RESOLVED: 0,
     CLOSED: 0,
   });
+  assert.equal(dashboard.unassigned_count, 0);
+  assert.equal(dashboard.avg_first_response_hours, null);
+  assert.equal(
+    dashboard.ticket_volume.days.reduce((sum, day) => sum + day.created, 0),
+    1,
+  );
+  assert.equal(
+    dashboard.ticket_volume.days.reduce((sum, day) => sum + day.resolved, 0),
+    0,
+  );
   assert.equal(
     dashboard.recent_tickets.find(
       (ticket) =>
@@ -701,6 +764,18 @@ test("dashboard of a customer without tickets is empty but well-formed", async (
     total_items: 0,
     total_pages: 0,
   });
+  assert.equal(dashboard.unassigned_count, 0);
+  assert.equal(dashboard.avg_first_response_hours, null);
+  assert.equal(dashboard.avg_resolution_hours, null);
+  assert.equal(dashboard.ticket_volume.days.length, 7);
+  assert.ok(
+    dashboard.ticket_volume.days.every(
+      (day) => day.created === 0 && day.resolved === 0,
+    ),
+    "a ticketless customer has an all-zero volume series",
+  );
+  assert.equal(dashboard.ticket_volume.total_created, 0);
+  assert.equal(dashboard.ticket_volume.total_resolved, 0);
 });
 
 // ---------------------------------------------------------------------------
