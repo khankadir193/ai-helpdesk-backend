@@ -16,6 +16,7 @@ import userRouter from "./modules/users/user.routes.js";
 import kbRouter from "./modules/kb/kb.routes.js";
 import settingsRouter from "./modules/settings/settings.routes.js";
 import teamRouter from "./modules/team/team.routes.js";
+import notificationRouter from "./modules/notifications/notification.routes.js";
 
 const app = express();
 
@@ -100,6 +101,7 @@ v1Router.use("/users", userRouter);
 v1Router.use("/kb", kbRouter);
 v1Router.use("/settings", settingsRouter);
 v1Router.use("/team", teamRouter);
+v1Router.use("/notifications", notificationRouter);
 
 app.use("/api/v1", v1Router);
 
