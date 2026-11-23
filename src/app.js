@@ -54,22 +54,28 @@ function parseAllowedOrigins(value) {
     .filter(Boolean);
 }
 
-const productionOrigins = parseAllowedOrigins(
+const defaultOrigins = [
+  "http://localhost:5173",
+  "http://localhost:4173",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:4173",
+];
+
+const configuredOrigins = parseAllowedOrigins(
   process.env.FRONTEND_ORIGIN || process.env.FRONTEND_URL,
 );
 
-if (env.isProduction && productionOrigins.length === 0) {
-  console.warn(
-    "FRONTEND_ORIGIN is not set; cross-origin browser requests will be blocked by CORS.",
-  );
-}
+const productionOrigins = Array.from(
+  new Set([...defaultOrigins, ...configuredOrigins]),
+);
 
 const corsOptions = env.isProduction
   ? {
-      origin: productionOrigins.length > 0 ? productionOrigins : false,
+      origin: productionOrigins,
       credentials: true,
       methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type"],
+      optionsSuccessStatus: 204,
     }
   : {
       // Development: allow the typical Vite/CRA dev-server origins.
@@ -77,11 +83,14 @@ const corsOptions = env.isProduction
       origin: [
         "http://localhost:3000",
         "http://localhost:5173",
+        "http://localhost:4173",
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:4173",
       ],
       credentials: true,
       methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type"],
+      optionsSuccessStatus: 204,
     };
 
 app.use(cors(corsOptions));
