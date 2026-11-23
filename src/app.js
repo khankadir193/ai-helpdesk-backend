@@ -35,17 +35,38 @@ app.use(helmet());
 
 // ---------------------------------------------------------------------------
 // CORS
-// In development, allow all origins with credentials disabled (no cookies
-// cross-origin during local testing).
-// In production, restrict to the known frontend origin and enable credentials
-// so the session cookie is forwarded on cross-origin requests.
+// In development, allow the typical Vite/CRA dev-server origins.
+// In production, restrict to the known frontend origin(s) and enable
+// credentials so the session cookie is forwarded on cross-origin requests.
+//
+// FRONTEND_ORIGIN accepts a comma-separated list (e.g. production + preview
+// URLs). FRONTEND_URL is used as a fallback because it is already required
+// for invitation links. Never reflect arbitrary request origins here: doing
+// so with credentials:true would allow any site to make authenticated calls.
 //
 // IMPORTANT: When sameSite:"none" is used for cross-origin cookies, ensure
 // secure:true is also set in session.js and the request is over HTTPS.
 // ---------------------------------------------------------------------------
+function parseAllowedOrigins(value) {
+  return String(value || "")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+}
+
+const productionOrigins = parseAllowedOrigins(
+  process.env.FRONTEND_ORIGIN || process.env.FRONTEND_URL,
+);
+
+if (env.isProduction && productionOrigins.length === 0) {
+  console.warn(
+    "FRONTEND_ORIGIN is not set; cross-origin browser requests will be blocked by CORS.",
+  );
+}
+
 const corsOptions = env.isProduction
   ? {
-      origin: process.env.FRONTEND_ORIGIN || false,
+      origin: productionOrigins.length > 0 ? productionOrigins : false,
       credentials: true,
       methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type"],

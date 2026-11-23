@@ -8,8 +8,9 @@
  *    `createTableIfMissing: true` — no extra migration required.
  *  - cookie.secure is set to true only in production so local HTTP
  *    development still works.
- *  - cookie.sameSite is set to "lax" for same-site deployments. Change to
- *    "none" (and ensure secure:true) if the frontend is on a different origin.
+ *  - cookie.sameSite is "none" in production because the frontend and API are
+ *    commonly on different sites (e.g. Vercel -> Render); "none" requires
+ *    secure:true, which is also set. Development uses "lax".
  *  - cookie.httpOnly:true prevents JavaScript from reading the session cookie.
  *  - resave:false / saveUninitialized:false comply with GDPR best practice
  *    and avoid unnecessary DB writes.
@@ -53,7 +54,9 @@ const sessionMiddleware = session({
   cookie: {
     httpOnly: true,
     secure: env.isProduction,
-    sameSite: "lax",
+    // Cross-site frontends need SameSite=None; Secure, otherwise the browser
+    // will not send the session cookie on XHR/fetch requests.
+    sameSite: env.isProduction ? "none" : "lax",
     maxAge: SESSION_MAX_AGE_MS,
     path: "/",
   },
