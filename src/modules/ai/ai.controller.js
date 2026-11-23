@@ -1,5 +1,20 @@
 import aiService from "./ai.service.js";
+import aiProvider from "./ai.provider.js";
 import asyncHandler from "../../utils/asyncHandler.js";
+
+/**
+ * GET /api/v1/tickets/ai/health
+ *
+ * Checks whether the AI provider is configured and ready to process requests.
+ * Response: 200 { status: "success", data: { available: true } } or 503 if unavailable.
+ */
+const checkAiHealth = asyncHandler(async (_req, res) => {
+  const isConfigured = aiProvider.isConfigured();
+  res.status(isConfigured ? 200 : 503).json({
+    status: isConfigured ? "success" : "error",
+    data: { available: isConfigured },
+  });
+});
 
 /**
  * POST /api/v1/tickets/:id/ai/classify — AGENT (assigned) or ADMIN.
@@ -98,6 +113,7 @@ const generateSummary = asyncHandler(async (req, res) => {
 });
 
 export default {
+  checkAiHealth,
   classifyTicket,
   suggestPriority,
   generateReplyDraft,

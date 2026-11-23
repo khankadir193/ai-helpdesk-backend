@@ -15,6 +15,10 @@ export const createCommentSchema = {
     type: "boolean",
     required: false,
   },
+  human_reviewed: {
+    type: "boolean",
+    required: false,
+  },
 };
 
 export const createCommentOptions = {

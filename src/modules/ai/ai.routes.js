@@ -30,6 +30,9 @@ const router = express.Router();
 // Enforce authentication on all AI endpoints
 router.use(authenticate);
 
+// GET /ai/health - AI service health and readiness check
+router.get("/ai/health", aiController.checkAiHealth);
+
 // POST /:id/ai/classify - AI ticket classification, governed by the
 // configurable "AI tools" permission (ownership scoping enforced in the
 // service)
