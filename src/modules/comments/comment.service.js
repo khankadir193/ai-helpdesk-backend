@@ -18,6 +18,7 @@ function serializeComment(row) {
     author: {
       id: row.author_id,
       name: row.author_name ?? null,
+      role: row.author_role ?? null,
     },
     message: row.message,
     is_internal: row.is_internal,
@@ -37,7 +38,7 @@ async function findCommentById(commentId, executor = database) {
   const { rows } = await executor.query(
     `SELECT c.id, c.ticket_id, c.author_id, c.message, c.is_internal,
             c.created_at, c.updated_at,
-            u.name AS author_name
+            u.name AS author_name, u.role AS author_role
      FROM ticket_comments c
      JOIN users u ON u.id = c.author_id
      WHERE c.id = $1`,
@@ -92,7 +93,7 @@ async function listComments(ticketId, user) {
   const { rows } = await database.query(
     `SELECT c.id, c.ticket_id, c.author_id, c.message, c.is_internal,
             c.created_at, c.updated_at,
-            u.name AS author_name
+            u.name AS author_name, u.role AS author_role
      FROM ticket_comments c
      JOIN users u ON u.id = c.author_id
      WHERE c.ticket_id = $1${filter}

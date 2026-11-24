@@ -10,10 +10,6 @@ export const TICKET_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
 
 /**
  * Validation schema for POST /api/v1/tickets
- *
- * category_id is not type-checked by `validate` because the middleware only
- * understands string/boolean; the service re-validates it with the same
- * positive-integer rule used everywhere else (see service layer).
  */
 export const createTicketSchema = {
   title: {
@@ -37,19 +33,52 @@ export const createTicketSchema = {
     pattern: new RegExp(`^(${TICKET_PRIORITIES.join("|")})$`),
     message: `priority must be one of ${TICKET_PRIORITIES.join(", ")}`,
   },
+  status: {
+    type: "string",
+    required: false,
+    pattern: new RegExp(`^(${TICKET_STATUSES.join("|")})$`),
+    message: `status must be one of ${TICKET_STATUSES.join(", ")}`,
+  },
+  customer_id: {
+    required: false,
+    nullable: true,
+  },
+  customer_name: {
+    type: "string",
+    required: false,
+    nullable: true,
+  },
+  customer_email: {
+    type: "string",
+    required: false,
+    nullable: true,
+  },
+  assigned_agent_id: {
+    required: false,
+    nullable: true,
+  },
+  source: {
+    type: "string",
+    required: false,
+    nullable: true,
+  },
+  tags: {
+    required: false,
+    nullable: true,
+  },
+  attachments: {
+    required: false,
+    nullable: true,
+  },
 };
 
 export const createTicketOptions = {
-  rejectUnknown: true,
+  rejectUnknown: false,
   disallowEmpty: true,
 };
 
 /**
  * Validation schema for PATCH /api/v1/tickets/:id
- *
- * Deliberately excludes `status` (use /:id/status) and
- * `assigned_agent_id` (use /:id/assignment); `rejectUnknown` turns
- * attempts to send them into a 422 so the contract stays explicit.
  */
 export const updateTicketSchema = {
   title: {
@@ -73,12 +102,25 @@ export const updateTicketSchema = {
     pattern: new RegExp(`^(${TICKET_PRIORITIES.join("|")})$`),
     message: `priority must be one of ${TICKET_PRIORITIES.join(", ")}`,
   },
+  source: {
+    type: "string",
+    required: false,
+    nullable: true,
+  },
+  tags: {
+    required: false,
+    nullable: true,
+  },
+  attachments: {
+    required: false,
+    nullable: true,
+  },
 };
 
 export const updateTicketOptions = {
-  rejectUnknown: true,
+  rejectUnknown: false,
   disallowEmpty: true,
-  requireAtLeastOneOf: ["title", "description", "category_id", "priority"],
+  requireAtLeastOneOf: ["title", "description", "category_id", "priority", "source", "tags", "attachments"],
 };
 
 /**
@@ -100,9 +142,6 @@ export const updateStatusOptions = {
 
 /**
  * Validation schema for PATCH /api/v1/tickets/:id/assignment
- *
- * `assigned_agent_id` may be null to unassign. Type/format is validated in
- * the service (target must be a positive integer referencing an active agent).
  */
 export const updateAssignmentSchema = {
   assigned_agent_id: {
@@ -130,10 +169,7 @@ export function validateTicketId(req, _res, next) {
 }
 
 /**
- * Validate a reference ID coming from a request body (e.g. an agent id for
- * ticket assignment). Returns the normalized integer string, or null when
- * the caller explicitly passes null/undefined and null is allowed.
- * Throws ApiError(400) on any other non-positive-integer input.
+ * Validate a reference ID coming from a request body.
  *
  * @param {unknown} value
  * @param {{ allowNull?: boolean }} options

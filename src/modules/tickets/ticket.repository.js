@@ -29,24 +29,36 @@ async function withTransaction(work) {
 
 /**
  * Insert a new ticket. Returns the raw inserted row.
+ * Supports source, tags, attachments, optional initial status, and assigned agent.
  *
  * @param {{ title: string, description: string, customer_id: string|number,
- *           category_id: string|number|null, priority: string }} data
+ *           category_id: string|number|null, priority: string,
+ *           status?: string, assigned_agent_id?: string|number|null,
+ *           source?: string, tags?: string[], attachments?: any[] }} data
  * @param {object} [executor]
  * @returns {Promise<object>}
  */
 async function insertTicket(data, executor = database) {
   const { rows } = await executor.query(
-    `INSERT INTO tickets (title, description, customer_id, category_id, priority)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO tickets (
+       title, description, customer_id, category_id, priority,
+       status, assigned_agent_id, source, tags, attachments
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING id, title, description, customer_id, category_id, priority,
-               status, resolved_at, closed_at, created_at, updated_at`,
+               status, assigned_agent_id, source, tags, attachments,
+               resolved_at, closed_at, created_at, updated_at`,
     [
       data.title,
       data.description,
       data.customer_id,
       data.category_id,
       data.priority,
+      data.status || "OPEN",
+      data.assigned_agent_id || null,
+      data.source || "Email",
+      data.tags || [],
+      JSON.stringify(data.attachments || []),
     ],
   );
   return rows[0];
@@ -90,6 +102,7 @@ async function insertTicketHistory(entry, executor = database) {
  */
 const TICKET_DETAIL_SELECT = `
     SELECT t.id, t.title, t.description, t.priority, t.status,
+           t.source, t.tags, t.attachments,
            t.resolved_at, t.closed_at, t.created_at, t.updated_at,
            c.id   AS customer_id,
            c.name AS customer_name,
@@ -132,8 +145,8 @@ async function findTicketById(id, executor = database) {
 async function lockTicketById(id, executor = database) {
   const { rows } = await executor.query(
     `SELECT id, title, description, customer_id, assigned_agent_id,
-            category_id, priority, status, resolved_at, closed_at,
-            created_at, updated_at
+            category_id, priority, status, source, tags, attachments,
+            resolved_at, closed_at, created_at, updated_at
      FROM tickets
      WHERE id = $1
      FOR UPDATE`,
@@ -148,17 +161,26 @@ async function lockTicketById(id, executor = database) {
  * are whitelisted by the caller.
  *
  * @param {{ where: string, values: Array, sort: string,
- *           order: "ASC"|"DESC", limit: number, offset: number }} params
+ *           order: "ASC"|"DESC", limit?: number, offset?: number }} params
  * @param {object} [executor]
  * @returns {Promise<Array<object>>}
  */
 async function listTickets({ where, values, sort, order, limit, offset }, executor = database) {
+  const limitClause =
+    limit !== undefined && offset !== undefined
+      ? `LIMIT $${values.length + 1} OFFSET $${values.length + 2}`
+      : "";
+  const params =
+    limit !== undefined && offset !== undefined
+      ? [...values, limit, offset]
+      : values;
+
   const { rows } = await executor.query(
     `${TICKET_DETAIL_SELECT}
      WHERE ${where}
      ORDER BY t.${sort} ${order}, t.id ${order}
-     LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
-    [...values, limit, offset],
+     ${limitClause}`,
+    params,
   );
   return rows;
 }
@@ -175,10 +197,98 @@ async function countTickets({ where, values }, executor = database) {
   const { rows } = await executor.query(
     `SELECT COUNT(*)::int AS total
      FROM tickets t
+     JOIN users c ON c.id = t.customer_id
+     LEFT JOIN users a ON a.id = t.assigned_agent_id
+     LEFT JOIN categories g ON g.id = t.category_id
      WHERE ${where}`,
     values,
   );
   return rows[0].total;
+}
+
+/**
+ * Get ticket counts for tabs (all, mine, unassigned) according to the user's role scope.
+ *
+ * @param {{ baseWhere: string, baseValues: Array, userId: string|number, role: string }} params
+ * @param {object} [executor]
+ * @returns {Promise<{ all: number, mine: number, unassigned: number }>}
+ */
+async function getTabCounts({ baseWhere, baseValues, userId, role }, executor = database) {
+  let mineFilter;
+  let unassignedFilter;
+
+  if (role === "CUSTOMER") {
+    mineFilter = `t.customer_id = '${userId}'`;
+    unassignedFilter = "FALSE";
+  } else {
+    mineFilter = `t.assigned_agent_id = '${userId}'`;
+    unassignedFilter = "t.assigned_agent_id IS NULL";
+  }
+
+  const query = `
+    SELECT
+      COUNT(*)::int AS all_count,
+      COUNT(*) FILTER (WHERE ${mineFilter})::int AS mine_count,
+      COUNT(*) FILTER (WHERE ${unassignedFilter})::int AS unassigned_count
+    FROM tickets t
+    JOIN users c ON c.id = t.customer_id
+    LEFT JOIN users a ON a.id = t.assigned_agent_id
+    LEFT JOIN categories g ON g.id = t.category_id
+    WHERE ${baseWhere}
+  `;
+
+  const { rows } = await executor.query(query, baseValues);
+  return {
+    all: rows[0]?.all_count ?? 0,
+    mine: rows[0]?.mine_count ?? 0,
+    unassigned: rows[0]?.unassigned_count ?? 0,
+  };
+}
+
+/**
+ * Search customers by name or email.
+ *
+ * @param {string} query
+ * @param {object} [executor]
+ * @returns {Promise<Array<object>>}
+ */
+async function searchCustomers(query, executor = database) {
+  const q = String(query || "").trim();
+  const filter = q ? `AND (u.name ILIKE $1 OR u.email ILIKE $1)` : "";
+  const params = q ? [`%${q}%`] : [];
+
+  const { rows } = await executor.query(
+    `SELECT u.id, u.name, u.email,
+            COUNT(t.id)::int AS total_tickets
+     FROM users u
+     LEFT JOIN tickets t ON t.customer_id = u.id
+     WHERE u.role = 'CUSTOMER' AND u.is_active = TRUE ${filter}
+     GROUP BY u.id, u.name, u.email
+     ORDER BY u.name ASC
+     LIMIT 10`,
+    params,
+  );
+  return rows;
+}
+
+/**
+ * Fetch active support agents along with their current open ticket counts.
+ *
+ * @param {object} [executor]
+ * @returns {Promise<Array<object>>}
+ */
+async function getAgentsWithOpenCounts(executor = database) {
+  const { rows } = await executor.query(
+    `SELECT u.id, u.name, u.email,
+            COALESCE(COUNT(t.id) FILTER (WHERE t.status IN ('OPEN', 'IN_PROGRESS')), 0)::int AS open_tickets_count
+     FROM users u
+     LEFT JOIN tickets t ON t.assigned_agent_id = u.id
+     WHERE u.role IN ('AGENT', 'ADMIN') AND u.is_active = TRUE
+     GROUP BY u.id, u.name, u.email
+     ORDER BY open_tickets_count DESC, u.name ASC
+     LIMIT 50`,
+  );
+  return rows;
 }
 
 /**
@@ -211,11 +321,7 @@ async function updateTicketFields(id, fields, executor = database) {
 }
 
 /**
- * Change a ticket's status and maintain resolved_at/closed_at consistency:
- *  - entering RESOLVED stamps resolved_at
- *  - entering CLOSED stamps closed_at and fills resolved_at only if it was
- *    still NULL (the DB CHECK requires resolved_at for CLOSED tickets)
- *  - leaving RESOLVED/CLOSED to an active status clears both timestamps
+ * Change a ticket's status and maintain resolved_at/closed_at consistency.
  *
  * @param {string|number} id
  * @param {string} nextStatus
@@ -266,8 +372,41 @@ async function updateTicketAssignment(id, agentId, executor = database) {
 }
 
 /**
- * Fetch the audit history for a ticket, newest first, with the acting user
- * attached (changed_by is nullable for system events).
+ * Delete a single ticket and all its dependent rows inside a transaction.
+ *
+ * @param {string|number} id
+ * @param {object} [executor]
+ * @returns {Promise<boolean>}
+ */
+async function deleteTicketById(id, executor = database) {
+  await executor.query("DELETE FROM ai_suggestions WHERE ticket_id = $1", [id]);
+  await executor.query("DELETE FROM ticket_comments WHERE ticket_id = $1", [id]);
+  await executor.query("DELETE FROM ticket_history WHERE ticket_id = $1", [id]);
+  const { rowCount } = await executor.query("DELETE FROM tickets WHERE id = $1", [id]);
+  return rowCount > 0;
+}
+
+/**
+ * Delete multiple tickets and their dependent rows inside a transaction.
+ *
+ * @param {Array<string|number>} ids
+ * @param {object} [executor]
+ * @returns {Promise<number>} deleted count
+ */
+async function bulkDeleteTickets(ids, executor = database) {
+  if (!ids || ids.length === 0) return 0;
+  await executor.query("DELETE FROM ai_suggestions WHERE ticket_id = ANY($1::bigint[])", [ids]);
+  await executor.query("DELETE FROM ticket_comments WHERE ticket_id = ANY($1::bigint[])", [ids]);
+  await executor.query("DELETE FROM ticket_history WHERE ticket_id = ANY($1::bigint[])", [ids]);
+  const { rowCount } = await executor.query(
+    "DELETE FROM tickets WHERE id = ANY($1::bigint[])",
+    [ids],
+  );
+  return rowCount;
+}
+
+/**
+ * Fetch the audit history for a ticket, newest first.
  *
  * @param {string|number} ticketId
  * @param {object} [executor]
@@ -301,6 +440,36 @@ async function findUserById(userId, executor = database) {
   return rows[0];
 }
 
+/**
+ * @param {string} email
+ * @param {object} [executor]
+ * @returns {Promise<object|undefined>}
+ */
+async function findUserByEmail(email, executor = database) {
+  const { rows } = await executor.query(
+    "SELECT id, name, email, role, is_active FROM users WHERE LOWER(email) = LOWER($1)",
+    [email],
+  );
+  return rows[0];
+}
+
+/**
+ * Insert a customer user on the fly if needed when staff creates a ticket.
+ *
+ * @param {{ name: string, email: string }} data
+ * @param {object} [executor]
+ * @returns {Promise<object>}
+ */
+async function insertCustomerUser(data, executor = database) {
+  const { rows } = await executor.query(
+    `INSERT INTO users (name, email, password_hash, role, is_active)
+     VALUES ($1, LOWER($2), 'NO_DIRECT_LOGIN_TEMP_HASH', 'CUSTOMER', TRUE)
+     RETURNING id, name, email, role, is_active`,
+    [data.name.trim(), data.email.trim()],
+  );
+  return rows[0];
+}
+
 export default {
   withTransaction,
   insertTicket,
@@ -309,9 +478,16 @@ export default {
   lockTicketById,
   listTickets,
   countTickets,
+  getTabCounts,
+  searchCustomers,
+  getAgentsWithOpenCounts,
   updateTicketFields,
   updateTicketStatus,
   updateTicketAssignment,
+  deleteTicketById,
+  bulkDeleteTickets,
   listTicketHistory,
   findUserById,
+  findUserByEmail,
+  insertCustomerUser,
 };
