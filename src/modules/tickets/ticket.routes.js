@@ -21,10 +21,10 @@ const router = express.Router();
 router.use(authenticate);
 
 // Middleware to authorize ticket creation:
-// - Staff (ADMIN / AGENT / MANAGER) can log tickets on behalf of customers
+// - Staff (ADMIN / AGENT) can log tickets on behalf of customers
 // - CUSTOMER is governed by the configurable "create_tickets" permission
 const authorizeTicketCreation = (req, res, next) => {
-  if (req.user && (req.user.role === "ADMIN" || req.user.role === "AGENT" || req.user.role === "MANAGER")) {
+  if (req.user && (req.user.role === "ADMIN" || req.user.role === "AGENT")) {
     return next();
   }
   return authorizePermission("create_tickets")(req, res, next);

@@ -160,7 +160,7 @@ function normalizeStatus(value) {
  */
 async function createTicket(data) {
   const { user } = data;
-  const isStaff = user && (user.role === "ADMIN" || user.role === "AGENT" || user.role === "MANAGER");
+  const isStaff = user && (user.role === "ADMIN" || user.role === "AGENT");
 
   const title = String(data.title || "").trim();
   const description = String(data.description || "").trim();
@@ -170,6 +170,19 @@ async function createTicket(data) {
   }
   if (!description) {
     throw new ApiError(422, "Ticket description is required.");
+  }
+
+  // Enforce customer constraints: cannot set status, assignee, or tags
+  if (!isStaff) {
+    if (data.status && String(data.status).toUpperCase() !== "OPEN") {
+      throw new ApiError(403, "Forbidden. Customers cannot set ticket status.");
+    }
+    if (data.assigned_agent_id !== undefined && data.assigned_agent_id !== null && data.assigned_agent_id !== "") {
+      throw new ApiError(403, "Forbidden. Customers cannot assign tickets.");
+    }
+    if (data.tags && (Array.isArray(data.tags) ? data.tags.length > 0 : String(data.tags).trim().length > 0)) {
+      throw new ApiError(403, "Forbidden. Customers cannot set ticket tags.");
+    }
   }
 
   let finalCustomerId = null;
@@ -201,13 +214,18 @@ async function createTicket(data) {
 
   if (isStaff && data.assigned_agent_id !== undefined && data.assigned_agent_id !== null && data.assigned_agent_id !== "") {
     assignedAgentId = validateModelId(data.assigned_agent_id);
+    if (user.role === "AGENT" && String(assignedAgentId) !== String(user.id)) {
+      throw new ApiError(403, "Forbidden. Support agents may only assign tickets to themselves.");
+    }
   }
 
   let normalizedTags = [];
-  if (Array.isArray(data.tags)) {
-    normalizedTags = data.tags.map((t) => String(t).trim()).filter(Boolean);
-  } else if (typeof data.tags === "string") {
-    normalizedTags = data.tags.split(",").map((t) => t.trim()).filter(Boolean);
+  if (isStaff) {
+    if (Array.isArray(data.tags)) {
+      normalizedTags = data.tags.map((t) => String(t).trim()).filter(Boolean);
+    } else if (typeof data.tags === "string") {
+      normalizedTags = data.tags.split(",").map((t) => t.trim()).filter(Boolean);
+    }
   }
 
   // Validate active category
@@ -454,17 +472,28 @@ async function listTickets({
  * Export tickets matching filters to RFC 4180 CSV string.
  */
 async function exportTicketsCsv({ user, tab, q, status, priority, categoryId, assignedAgentId, dateRange, from, to }) {
+  if (user.role === "CUSTOMER") {
+    throw new ApiError(403, "Forbidden. Customers cannot export tickets.");
+  }
+
+  let effectiveTab = tab;
+  let effectiveAgentId = assignedAgentId;
+  if (user.role === "AGENT") {
+    effectiveTab = "mine";
+    effectiveAgentId = user.id;
+  }
+
   const viewScope = await permissions.getTicketScope(user.role, "view_tickets");
 
   const { where, values } = buildTicketQueryConditions({
     user,
     viewScope,
-    tab,
+    tab: effectiveTab,
     q,
     status,
     priority,
     categoryId,
-    assignedAgentId,
+    assignedAgentId: effectiveAgentId,
     dateRange,
     from,
     to,
@@ -525,7 +554,15 @@ async function getTicketById(id, user) {
     throw new ApiError(403, "Forbidden. You are not authorized to view this ticket.");
   }
 
-  return serializeTicket(row);
+  const serialized = serializeTicket(row);
+  if (user && user.role === "CUSTOMER") {
+    serialized.tags = [];
+    serialized.assigned_agent_id = null;
+    serialized.assigned_agent = null;
+    serialized.assigned_agent_name = null;
+    serialized.assigned_agent_email = null;
+  }
+  return serialized;
 }
 
 /**
@@ -544,11 +581,19 @@ async function updateTicket(id, user, data) {
     if (row.status === "CLOSED") {
       throw new ApiError(409, "Cannot update a CLOSED ticket.");
     }
-    if (user.role === "CUSTOMER" && row.status !== "OPEN") {
-      throw new ApiError(
-        403,
-        "Forbidden. You can only edit your ticket while its status is OPEN.",
-      );
+    if (user.role === "CUSTOMER") {
+      if (row.status !== "OPEN") {
+        throw new ApiError(
+          403,
+          "Forbidden. You can only edit your ticket while its status is OPEN.",
+        );
+      }
+      if (data.status !== undefined || data.assigned_agent_id !== undefined || data.tags !== undefined || data.priority !== undefined) {
+        throw new ApiError(403, "Forbidden. Customers cannot modify ticket status, priority, assignee, or tags.");
+      }
+    }
+    if (user.role === "AGENT" && data.assigned_agent_id !== undefined && data.assigned_agent_id !== null && String(data.assigned_agent_id) !== String(user.id)) {
+      throw new ApiError(403, "Forbidden. Support agents may only assign tickets to themselves.");
     }
 
     const fields = {};
@@ -887,6 +932,10 @@ async function bulkUpdateAssignment(ticketIds, assignedAgentId, user) {
     throw new ApiError(400, "ticket_ids array is required.");
   }
 
+  if (user.role === "AGENT" && assignedAgentId !== null && String(assignedAgentId) !== String(user.id)) {
+    throw new ApiError(403, "Forbidden. Support agents may only assign tickets to themselves.");
+  }
+
   const successfulIds = [];
   const failedIds = [];
 
@@ -934,7 +983,7 @@ async function bulkDeleteTickets(ticketIds, user) {
  * Search customers.
  */
 async function searchCustomers(query, user) {
-  if (user.role !== "ADMIN" && user.role !== "AGENT" && user.role !== "MANAGER") {
+  if (user.role !== "ADMIN" && user.role !== "AGENT") {
     throw new ApiError(403, "Forbidden. Staff access required.");
   }
   const customers = await ticketRepository.searchCustomers(query);
@@ -950,7 +999,7 @@ async function searchCustomers(query, user) {
  * Get active agents with open ticket counts.
  */
 async function getAgentsWithOpenCounts(user) {
-  if (user.role !== "ADMIN" && user.role !== "AGENT" && user.role !== "MANAGER") {
+  if (user.role !== "ADMIN" && user.role !== "AGENT") {
     throw new ApiError(403, "Forbidden. Staff access required.");
   }
   const agents = await ticketRepository.getAgentsWithOpenCounts();

@@ -754,7 +754,7 @@ test("agents and customers cannot assign tickets (403)", async () => {
   assert.equal(customerTry.status, 403);
 });
 
-test("admin can assign an agent; agent then becomes a manager of the ticket", async () => {
+test("admin can assign an agent; agent then becomes the assignee of the ticket", async () => {
   const { status, body } = await request(
     `/api/v1/tickets/${ticket03.id}/assignment`,
     {
