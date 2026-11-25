@@ -30,14 +30,14 @@ export const createTicketSchema = {
   priority: {
     type: "string",
     required: false,
-    pattern: new RegExp(`^(${TICKET_PRIORITIES.join("|")})$`),
+    pattern: new RegExp(`^(${TICKET_PRIORITIES.join("|")})$`, "i"),
     message: `priority must be one of ${TICKET_PRIORITIES.join(", ")}`,
   },
-  status: {
+  source: {
     type: "string",
     required: false,
-    pattern: new RegExp(`^(${TICKET_STATUSES.join("|")})$`),
-    message: `status must be one of ${TICKET_STATUSES.join(", ")}`,
+    pattern: /^(Email|Phone|Chat|Web|Portal)$/i,
+    message: "source must be one of Email, Phone, Chat, Web, Portal",
   },
   customer_id: {
     required: false,
@@ -46,34 +46,23 @@ export const createTicketSchema = {
   customer_name: {
     type: "string",
     required: false,
-    nullable: true,
+    maxLength: 100,
   },
   customer_email: {
     type: "string",
     required: false,
-    nullable: true,
-  },
-  assigned_agent_id: {
-    required: false,
-    nullable: true,
-  },
-  source: {
-    type: "string",
-    required: false,
-    nullable: true,
+    maxLength: 255,
+    pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+    message: "customer_email must be a valid email address",
   },
   tags: {
-    required: false,
-    nullable: true,
-  },
-  attachments: {
     required: false,
     nullable: true,
   },
 };
 
 export const createTicketOptions = {
-  rejectUnknown: false,
+  rejectUnknown: true,
   disallowEmpty: true,
 };
 
@@ -102,25 +91,12 @@ export const updateTicketSchema = {
     pattern: new RegExp(`^(${TICKET_PRIORITIES.join("|")})$`),
     message: `priority must be one of ${TICKET_PRIORITIES.join(", ")}`,
   },
-  source: {
-    type: "string",
-    required: false,
-    nullable: true,
-  },
-  tags: {
-    required: false,
-    nullable: true,
-  },
-  attachments: {
-    required: false,
-    nullable: true,
-  },
 };
 
 export const updateTicketOptions = {
-  rejectUnknown: false,
+  rejectUnknown: true,
   disallowEmpty: true,
-  requireAtLeastOneOf: ["title", "description", "category_id", "priority", "source", "tags", "attachments"],
+  requireAtLeastOneOf: ["title", "description", "category_id", "priority"],
 };
 
 /**

@@ -138,6 +138,21 @@ function normalizeStatus(value) {
 }
 
 /**
+ * Normalize source value.
+ *
+ * @param {string|undefined} value
+ * @param {string} [defaultSource="Email"]
+ * @returns {string}
+ */
+function normalizeSource(value, defaultSource = "Email") {
+  if (value === undefined || value === null || value === "") return defaultSource;
+  const normalized = String(value).trim();
+  const allowed = ["Email", "Phone", "Chat", "Web", "Portal"];
+  const matched = allowed.find((item) => item.toLowerCase() === normalized.toLowerCase());
+  return matched || defaultSource;
+}
+
+/**
  * Create a new ticket and record the TICKET_CREATED audit entry.
  * Supports customer self-creation or staff logging on behalf of customer.
  *
@@ -172,8 +187,15 @@ async function createTicket(data) {
     throw new ApiError(422, "Ticket description is required.");
   }
 
-  // Enforce customer constraints: cannot set status, assignee, or tags
+  // Enforce customer constraints: cannot set customer_id, status, assignee, or tags
   if (!isStaff) {
+    if (data.customer_id !== undefined && data.customer_id !== null) {
+      const err = new ApiError(422, "Validation failed");
+      err.errors = [
+        { field: "customer_id", message: "Customers cannot specify customer_id" },
+      ];
+      throw err;
+    }
     if (data.status && String(data.status).toUpperCase() !== "OPEN") {
       throw new ApiError(403, "Forbidden. Customers cannot set ticket status.");
     }
@@ -193,6 +215,10 @@ async function createTicket(data) {
     // Staff can provide customer_id or customer_email + customer_name
     if (data.customer_id) {
       finalCustomerId = validateModelId(data.customer_id);
+      const existing = await ticketRepository.findUserById(finalCustomerId);
+      if (!existing) {
+        throw new ApiError(404, "Customer not found.");
+      }
     } else if (data.customer_email) {
       const email = String(data.customer_email).trim().toLowerCase();
       const existing = await ticketRepository.findUserByEmail(email);
@@ -209,15 +235,8 @@ async function createTicket(data) {
   }
 
   const normalizedPriority = normalizePriority(data.priority);
-  const normalizedStatus = isStaff && data.status ? normalizeStatus(data.status) : "OPEN";
-  let assignedAgentId = null;
-
-  if (isStaff && data.assigned_agent_id !== undefined && data.assigned_agent_id !== null && data.assigned_agent_id !== "") {
-    assignedAgentId = validateModelId(data.assigned_agent_id);
-    if (user.role === "AGENT" && String(assignedAgentId) !== String(user.id)) {
-      throw new ApiError(403, "Forbidden. Support agents may only assign tickets to themselves.");
-    }
-  }
+  const normalizedStatus = "OPEN";
+  const effectiveSource = normalizeSource(data.source, !isStaff ? "Portal" : "Email");
 
   let normalizedTags = [];
   if (isStaff) {
@@ -240,10 +259,10 @@ async function createTicket(data) {
         category_id: data.category_id || null,
         priority: normalizedPriority,
         status: normalizedStatus,
-        assigned_agent_id: assignedAgentId,
-        source: data.source ? String(data.source).trim() : "Email",
+        assigned_agent_id: null,
+        source: effectiveSource,
         tags: normalizedTags,
-        attachments: Array.isArray(data.attachments) ? data.attachments : [],
+        attachments: [],
       },
       client,
     );
@@ -280,7 +299,7 @@ function buildTicketQueryConditions({ user, viewScope, tab, q, status, priority,
     conditions.push(`t.customer_id = $${values.length}`);
   } else if (viewScope === "ASSIGNED") {
     values.push(user.id);
-    conditions.push(`(t.assigned_agent_id = $${values.length} OR t.assigned_agent_id IS NULL)`);
+    conditions.push(`t.assigned_agent_id = $${values.length}`);
   } else if (viewScope === "NONE") {
     conditions.push("FALSE");
   }
@@ -314,49 +333,55 @@ function buildTicketQueryConditions({ user, viewScope, tab, q, status, priority,
 
   // Status filter (single or comma-separated)
   if (status !== undefined && status !== "") {
-    const statuses = String(status)
-      .split(",")
-      .map((s) => s.trim().toUpperCase())
-      .filter((s) => TICKET_STATUSES.includes(s));
-    if (statuses.length > 0) {
-      values.push(statuses);
-      conditions.push(`t.status = ANY($${values.length}::varchar[])`);
+    const rawStatuses = String(status).split(",").map((s) => s.trim().toUpperCase());
+    for (const s of rawStatuses) {
+      if (!TICKET_STATUSES.includes(s)) {
+        throw new ApiError(400, `Invalid status filter value: ${s}`);
+      }
     }
+    values.push(rawStatuses);
+    conditions.push(`t.status = ANY($${values.length}::varchar[])`);
   }
 
   // Priority filter (single or comma-separated)
   if (priority !== undefined && priority !== "") {
-    const priorities = String(priority)
-      .split(",")
-      .map((p) => p.trim().toUpperCase())
-      .filter((p) => TICKET_PRIORITIES.includes(p));
-    if (priorities.length > 0) {
-      values.push(priorities);
-      conditions.push(`t.priority = ANY($${values.length}::varchar[])`);
+    const rawPriorities = String(priority).split(",").map((p) => p.trim().toUpperCase());
+    for (const p of rawPriorities) {
+      if (!TICKET_PRIORITIES.includes(p)) {
+        throw new ApiError(400, `Invalid priority filter value: ${p}`);
+      }
     }
+    values.push(rawPriorities);
+    conditions.push(`t.priority = ANY($${values.length}::varchar[])`);
   }
 
   // Category filter (single or comma-separated)
   if (categoryId !== undefined && categoryId !== "") {
-    const catIds = String(categoryId)
-      .split(",")
-      .map((c) => c.trim())
-      .filter((c) => /^\d+$/.test(c))
-      .map(Number);
-    if (catIds.length > 0) {
-      values.push(catIds);
-      conditions.push(`t.category_id = ANY($${values.length}::bigint[])`);
+    const rawCats = String(categoryId).split(",").map((c) => c.trim());
+    const validCatIds = [];
+    for (const c of rawCats) {
+      if (!/^\d+$/.test(c) || Number(c) <= 0) {
+        throw new ApiError(400, `Invalid category_id filter value: ${c}`);
+      }
+      validCatIds.push(Number(c));
     }
+    values.push(validCatIds);
+    conditions.push(`t.category_id = ANY($${values.length}::bigint[])`);
   }
 
-  // Assigned Agent filter
+  // Assigned Agent filter (Admin-only)
   if (assignedAgentId !== undefined && assignedAgentId !== "") {
+    if (user.role !== "ADMIN") {
+      throw new ApiError(403, "Only admins can filter tickets by assigned agent.");
+    }
     const cleanAgent = String(assignedAgentId).trim().toLowerCase();
     if (cleanAgent === "unassigned" || cleanAgent === "none") {
       conditions.push("t.assigned_agent_id IS NULL");
     } else if (/^\d+$/.test(cleanAgent)) {
-      values.push(cleanAgent);
+      values.push(validateModelId(cleanAgent));
       conditions.push(`t.assigned_agent_id = $${values.length}`);
+    } else {
+      throw new ApiError(400, "Invalid assigned_agent_id filter.");
     }
   }
 
@@ -462,7 +487,7 @@ async function listTickets({
       page,
       limit,
       total_items: total,
-      total_pages: Math.ceil(total / limit) || 1,
+      total_pages: Math.ceil(total / limit),
     },
     counts,
   };
@@ -827,7 +852,7 @@ async function updateTicketAssignment(id, user, assignedAgentId) {
         throw new ApiError(404, "Agent not found.");
       }
       if (agent.role !== "AGENT" && agent.role !== "ADMIN") {
-        throw new ApiError(400, "The assigned user must have staff role.");
+        throw new ApiError(400, "The assigned user must have AGENT role.");
       }
       if (!agent.is_active) {
         throw new ApiError(400, "Cannot assign a deactivated agent.");

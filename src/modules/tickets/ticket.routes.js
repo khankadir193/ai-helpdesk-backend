@@ -21,10 +21,15 @@ const router = express.Router();
 router.use(authenticate);
 
 // Middleware to authorize ticket creation:
-// - Staff (ADMIN / AGENT) can log tickets on behalf of customers
-// - CUSTOMER is governed by the configurable "create_tickets" permission
+// - Staff (ADMIN / AGENT) can log tickets on behalf of customers (when customer info is supplied)
+// - Requests without customer info fall back to the configurable "create_tickets" permission
 const authorizeTicketCreation = (req, res, next) => {
-  if (req.user && (req.user.role === "ADMIN" || req.user.role === "AGENT")) {
+  const isStaff = req.user && (req.user.role === "ADMIN" || req.user.role === "AGENT");
+  const hasCustomerInfo = Boolean(
+    req.body && (req.body.customer_id || req.body.customer_email || req.body.customer_name)
+  );
+
+  if (isStaff && hasCustomerInfo) {
     return next();
   }
   return authorizePermission("create_tickets")(req, res, next);
@@ -86,6 +91,7 @@ router.patch(
 // PATCH /:id/assignment - Assign/reassign ticket
 router.patch(
   "/:id/assignment",
+  authorizePermission("assign_reassign_tickets"),
   validateTicketId,
   validate(updateAssignmentSchema, updateAssignmentOptions),
   ticketController.updateTicketAssignment,
