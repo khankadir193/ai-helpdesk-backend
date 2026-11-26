@@ -2,6 +2,7 @@ import database from "../../config/database.js";
 import ApiError from "../../utils/ApiError.js";
 import ticketService from "../tickets/ticket.service.js";
 import ticketRepository from "../tickets/ticket.repository.js";
+import permissions from "../../utils/permissions.js";
 import { TICKET_STATUSES, TICKET_PRIORITIES } from "../tickets/ticket.validation.js";
 
 /**
@@ -84,12 +85,16 @@ const VOLUME_DAYS = 7;
  * @param {{ id: string|number, role: string }} user
  * @returns {{ where: string, values: any[] }}
  */
-function scopeFor(user) {
-  if (user.role === "CUSTOMER") {
+async function scopeFor(user) {
+  const viewScope = await permissions.getTicketScope(user.role, "view_tickets");
+  if (viewScope === "OWN") {
     return { where: "t.customer_id = $1", values: [user.id] };
   }
-  if (user.role === "AGENT") {
+  if (viewScope === "ASSIGNED") {
     return { where: "t.assigned_agent_id = $1", values: [user.id] };
+  }
+  if (viewScope === "NONE") {
+    return { where: "FALSE", values: [] };
   }
   return { where: "TRUE", values: [] };
 }
@@ -144,7 +149,7 @@ function applyDateRange(scope, { startDate, endDate } = {}) {
  * @returns {Promise<object>}
  */
 async function buildScopedDashboard(user, { page, limit, startDate, endDate }) {
-  const baseScope = scopeFor(user);
+  const baseScope = await scopeFor(user);
   // Apply date range to all scoped queries (KPIs, charts, recent tickets)
   const scope = applyDateRange(baseScope, { startDate, endDate });
 

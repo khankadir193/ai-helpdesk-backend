@@ -13,33 +13,30 @@ const router = express.Router();
 // All team endpoints require authentication
 router.use(authenticate);
 
-// 1. Team Performance & CSV Export (AGENT/ADMIN by role; governed by the
-//    configurable view_reports permission)
+// 1. Team Performance & CSV Export (governed by the configurable view_reports permission)
 router.get(
   "/performance",
-  authorize("AGENT", "ADMIN"),
   authorizePermission("view_reports"),
   teamController.getPerformance,
 );
 router.get(
   "/performance/export",
-  authorize("AGENT", "ADMIN"),
   authorizePermission("view_reports"),
   teamController.exportPerformanceCsv,
 );
 
-// 2. Roles & Permissions matrix (read by AGENT/ADMIN; write requires the
-//    ADMIN role AND the configurable edit_roles_permissions permission —
-//    the ADMIN value of which is locked, so Admins can never lock themselves
-//    out. The static role gate stays as the privilege-escalation boundary.)
-router.get("/roles", authorize("AGENT", "ADMIN"), teamController.getRoles);
+// 2. Roles & Permissions matrix (read requires VIEW, write requires EDIT on edit_roles_permissions)
+router.get(
+  "/roles",
+  authorizePermission("edit_roles_permissions", "VIEW"),
+  teamController.getRoles,
+);
 router.patch(
   "/roles",
-  authorize("ADMIN"),
   authorizePermission("edit_roles_permissions", "EDIT"),
   teamController.patchRoles,
 );
-router.post("/roles/request-change", authorize("AGENT", "ADMIN"), teamController.requestRoleChange);
+router.post("/roles/request-change", teamController.requestRoleChange);
 
 // 3. Teams list
 router.get("/teams", authorize("AGENT", "ADMIN"), teamController.getTeams);

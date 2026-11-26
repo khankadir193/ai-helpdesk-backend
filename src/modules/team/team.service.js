@@ -10,6 +10,9 @@ import {
   PERMISSION_IDS,
   PERMISSION_OPTIONS,
   hasPermission,
+  getReportScope,
+  getRolesMatrixScope,
+  invalidateCache,
 } from "../../utils/permissions.js";
 
 const SLA_MET_EXPR = `(
@@ -63,7 +66,11 @@ function parseDateRange(query) {
  */
 async function getTeamPerformance(user, query = {}) {
   const { from, to } = parseDateRange(query);
-  const ownScope = user.role === "AGENT";
+  const reportScope = await getReportScope(user.role);
+  if (reportScope === "NONE") {
+    throw new ApiError(403, "You do not have permission to view reports.");
+  }
+  const ownScope = reportScope === "OWN";
 
   // 1. Live Workload Counts (consistent with Dashboard)
   const workloadScope = ownScope ? "AND t.assigned_agent_id = $1" : "";
@@ -340,7 +347,8 @@ async function exportTeamPerformanceCsv(user, query = {}) {
  */
 
 async function getRolesAndPermissions(user) {
-  const canEdit = user.role === "ADMIN";
+  const rolesScope = await getRolesMatrixScope(user.role);
+  const canEdit = rolesScope === "EDIT" || user.role === "ADMIN";
 
   // Find workspace admin contact
   const { rows: adminRows } = await database.query(
@@ -424,6 +432,8 @@ const ADMIN_LOCK_MESSAGES = {
     "Cannot revoke 'Billing, security & settings' from the Admin role.",
   edit_roles_permissions:
     "Cannot revoke 'Edit roles & permissions' from the Admin role.",
+  invite_members:
+    "Cannot revoke 'Member management' from the Admin role.",
 };
 
 function isValidPermissionValue(value) {
@@ -431,7 +441,8 @@ function isValidPermissionValue(value) {
 }
 
 async function updateRolesAndPermissions(user, permissions) {
-  if (user.role !== "ADMIN") {
+  const rolesScope = await getRolesMatrixScope(user.role);
+  if (user.role !== "ADMIN" && rolesScope !== "EDIT") {
     throw new ApiError(403, "Only Admins can change workspace permissions.");
   }
 
@@ -511,6 +522,8 @@ async function updateRolesAndPermissions(user, permissions) {
       [perm.id, adminValue, managerValue, agentValue, customerValue],
     );
   }
+
+  invalidateCache();
 
   return getRolesAndPermissions(user);
 }

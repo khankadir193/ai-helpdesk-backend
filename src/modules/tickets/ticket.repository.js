@@ -254,7 +254,7 @@ async function getTabCounts({ baseWhere, baseValues, userId, role }, executor = 
  */
 async function searchCustomers(query, executor = database) {
   const q = String(query || "").trim();
-  const filter = q ? `AND (u.name ILIKE $1 OR u.email ILIKE $1)` : "";
+  const filter = q ? "AND (u.name ILIKE $1 OR u.email ILIKE $1)" : "";
   const params = q ? [`%${q}%`] : [];
 
   const { rows } = await executor.query(

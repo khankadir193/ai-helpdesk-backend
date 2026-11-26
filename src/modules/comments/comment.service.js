@@ -86,7 +86,10 @@ async function listComments(ticketId, user) {
 
   const values = [ticketId];
   let filter = "";
-  if (user.role === "CUSTOMER") {
+  const canViewNotes =
+    user.role !== "CUSTOMER" &&
+    (await permissions.hasPermission(user.role, "internal_notes"));
+  if (!canViewNotes) {
     filter = " AND c.is_internal = false";
   }
 

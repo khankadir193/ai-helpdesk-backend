@@ -21,15 +21,10 @@ const router = express.Router();
 router.use(authenticate);
 
 // Middleware to authorize ticket creation:
-// - Staff (ADMIN / AGENT) can log tickets on behalf of customers (when customer info is supplied)
-// - Requests without customer info fall back to the configurable "create_tickets" permission
+// - Workspace Admins can always log tickets on behalf of customers
+// - Agents and Customers are strictly governed by the saved "create_tickets" permission
 const authorizeTicketCreation = (req, res, next) => {
-  const isStaff = req.user && (req.user.role === "ADMIN" || req.user.role === "AGENT");
-  const hasCustomerInfo = Boolean(
-    req.body && (req.body.customer_id || req.body.customer_email || req.body.customer_name)
-  );
-
-  if (isStaff && hasCustomerInfo) {
+  if (req.user && req.user.role === "ADMIN") {
     return next();
   }
   return authorizePermission("create_tickets")(req, res, next);
@@ -47,10 +42,18 @@ router.get("/customers", ticketController.searchCustomers);
 router.get("/agents", ticketController.getAgentsWithCounts);
 
 // POST /bulk/status - Change status for multiple tickets
-router.post("/bulk/status", ticketController.bulkUpdateStatus);
+router.post(
+  "/bulk/status",
+  authorizePermission("update_status"),
+  ticketController.bulkUpdateStatus,
+);
 
 // POST /bulk/assign - Assign/unassign multiple tickets
-router.post("/bulk/assign", ticketController.bulkUpdateAssignment);
+router.post(
+  "/bulk/assign",
+  authorizePermission("assign_reassign_tickets"),
+  ticketController.bulkUpdateAssignment,
+);
 
 // POST /bulk/delete - Bulk delete tickets (Admin only)
 router.post("/bulk/delete", ticketController.bulkDeleteTickets);

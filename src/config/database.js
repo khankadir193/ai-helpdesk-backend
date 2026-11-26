@@ -10,6 +10,8 @@ const { Pool } = pg;
 const pool = new Pool({
   connectionString: env.databaseUrl,
   connectionTimeoutMillis: 30000,
+  idleTimeoutMillis: 10000,
+  keepAlive: true,
 });
 
 pool.on("error", (error) => {
@@ -17,8 +19,19 @@ pool.on("error", (error) => {
 });
 
 const database = {
-  query(text, values) {
-    return pool.query(text, values);
+  async query(text, values) {
+    try {
+      return await pool.query(text, values);
+    } catch (error) {
+      if (
+        error.code === "ECONNRESET" ||
+        error.message?.includes("ECONNRESET") ||
+        error.message?.includes("Connection terminated unexpectedly")
+      ) {
+        return pool.query(text, values);
+      }
+      throw error;
+    }
   },
   connect() {
     return pool.connect();

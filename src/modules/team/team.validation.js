@@ -2,6 +2,7 @@
  * Validation schemas and input helpers for the Team module.
  */
 import ApiError from "../../utils/ApiError.js";
+import { PERMISSION_IDS, PERMISSION_OPTIONS } from "../../utils/permissions.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -63,19 +64,88 @@ export function validateRequestChangePayload(body) {
  * (team.service.updateRolesAndPermissions rejects changes with 422).
  */
 export function validateUpdateRolesPayload(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new ApiError(400, "Request body must be a valid JSON object.");
+  }
+
+  // Reject unknown root-level keys
+  for (const key of Object.keys(body)) {
+    if (key !== "permissions") {
+      throw new ApiError(422, `Unknown property "${key}" in request body.`);
+    }
+  }
+
   if (!body.permissions || !Array.isArray(body.permissions)) {
     throw new ApiError(400, "Permissions array is required.");
   }
 
+  const ALLOWED_ITEM_KEYS = new Set([
+    "id",
+    "name",
+    "values",
+    "admin_value",
+    "agent_value",
+    "customer_value",
+    "oldValues",
+  ]);
+  const ALLOWED_ROLES = new Set(["ADMIN", "AGENT", "CUSTOMER"]);
+
   const sanitized = body.permissions.map((p) => {
+    if (!p || typeof p !== "object" || Array.isArray(p)) {
+      throw new ApiError(400, "Each permission entry must be an object.");
+    }
+
+    // Reject unknown keys inside permission item
+    for (const key of Object.keys(p)) {
+      if (!ALLOWED_ITEM_KEYS.has(key)) {
+        throw new ApiError(422, `Unknown property "${key}" in permission object.`);
+      }
+    }
+
     if (!p.id || typeof p.id !== "string") {
       throw new ApiError(400, "Each permission must have a valid string id.");
     }
+    const id = p.id.trim();
+    if (!PERMISSION_IDS.includes(id)) {
+      throw new ApiError(422, `Unknown permission "${id}".`);
+    }
+
+    // Check role keys inside `values` if present
+    if (p.values && typeof p.values === "object" && !Array.isArray(p.values)) {
+      for (const roleKey of Object.keys(p.values)) {
+        if (!ALLOWED_ROLES.has(roleKey)) {
+          throw new ApiError(422, `Unknown role "${roleKey}".`);
+        }
+      }
+    }
+
+    const adminValue = p.values?.ADMIN ?? p.admin_value;
+    const agentValue = p.values?.AGENT ?? p.agent_value;
+    const customerValue = p.values?.CUSTOMER ?? p.customer_value;
+
+    const allowedOpts = PERMISSION_OPTIONS[id] || [];
+
+    // Validate value enums per role
+    for (const [roleLabel, roleVal] of [
+      ["ADMIN", adminValue],
+      ["AGENT", agentValue],
+      ["CUSTOMER", customerValue],
+    ]) {
+      if (roleVal !== undefined && roleVal !== null && typeof roleVal === "string" && roleVal.trim().length > 0) {
+        if (roleLabel !== "ADMIN" && !allowedOpts.includes(roleVal.trim())) {
+          throw new ApiError(
+            422,
+            `Invalid value "${roleVal}" for permission "${id}" (${roleLabel}).`,
+          );
+        }
+      }
+    }
+
     return {
-      id: p.id.trim(),
-      admin_value: p.values?.ADMIN ?? p.admin_value,
-      agent_value: p.values?.AGENT ?? p.agent_value,
-      customer_value: p.values?.CUSTOMER ?? p.customer_value,
+      id,
+      admin_value: adminValue,
+      agent_value: agentValue,
+      customer_value: customerValue,
     };
   });
 

@@ -497,18 +497,21 @@ async function listTickets({
  * Export tickets matching filters to RFC 4180 CSV string.
  */
 async function exportTicketsCsv({ user, tab, q, status, priority, categoryId, assignedAgentId, dateRange, from, to }) {
+  const viewScope = await permissions.getTicketScope(user.role, "view_tickets");
+  if (viewScope === "NONE") {
+    throw new ApiError(403, "Forbidden. You do not have permission to export tickets.");
+  }
+
   if (user.role === "CUSTOMER") {
     throw new ApiError(403, "Forbidden. Customers cannot export tickets.");
   }
 
   let effectiveTab = tab;
   let effectiveAgentId = assignedAgentId;
-  if (user.role === "AGENT") {
+  if (viewScope === "ASSIGNED") {
     effectiveTab = "mine";
     effectiveAgentId = user.id;
   }
-
-  const viewScope = await permissions.getTicketScope(user.role, "view_tickets");
 
   const { where, values } = buildTicketQueryConditions({
     user,
@@ -532,8 +535,8 @@ async function exportTicketsCsv({ user, tab, q, status, priority, categoryId, as
   });
 
   const escapeCsv = (val) => {
-    if (val === null || val === undefined) return '""';
-    const str = String(val).replace(/"/g, '""');
+    if (val === null || val === undefined) return "\"\"";
+    const str = String(val).replace(/"/g, "\"\"");
     return `"${str}"`;
   };
 
@@ -820,7 +823,7 @@ async function updateTicketStatus(id, user, nextStatus) {
  */
 async function updateTicketAssignment(id, user, assignedAgentId) {
   const canAssign = await permissions.hasPermission(user.role, "assign_reassign_tickets");
-  if (!canAssign && user.role !== "ADMIN" && user.role !== "AGENT") {
+  if (!canAssign && user.role !== "ADMIN") {
     throw new ApiError(
       403,
       "Forbidden. You do not have permission to assign tickets.",
@@ -955,6 +958,11 @@ async function bulkUpdateStatus(ticketIds, status, user) {
 async function bulkUpdateAssignment(ticketIds, assignedAgentId, user) {
   if (!Array.isArray(ticketIds) || ticketIds.length === 0) {
     throw new ApiError(400, "ticket_ids array is required.");
+  }
+
+  const canAssign = await permissions.hasPermission(user.role, "assign_reassign_tickets");
+  if (!canAssign && user.role !== "ADMIN") {
+    throw new ApiError(403, "Forbidden. You do not have permission to assign tickets.");
   }
 
   if (user.role === "AGENT" && assignedAgentId !== null && String(assignedAgentId) !== String(user.id)) {

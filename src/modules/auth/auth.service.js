@@ -1,6 +1,10 @@
 import bcrypt from "bcrypt";
 import database from "../../config/database.js";
 import ApiError from "../../utils/ApiError.js";
+import {
+  getUserEffectivePermissions,
+  getUserPermissionScopes,
+} from "../../utils/permissions.js";
 
 /** bcrypt work factor — high enough for security, bounded to stay usable */
 const BCRYPT_ROUNDS = 12;
@@ -113,11 +117,16 @@ async function loginUser({ email, password }) {
     throw new ApiError(401, "Your account has been deactivated.");
   }
 
+  const permissions = await getUserEffectivePermissions(user.role);
+  const permission_scopes = await getUserPermissionScopes(user.role);
+
   return {
     id: String(user.id),
     name: user.name,
     email: user.email,
     role: user.role,
+    permissions,
+    permission_scopes,
   };
 }
 
@@ -126,7 +135,7 @@ async function loginUser({ email, password }) {
  * Used by the /me endpoint after session authentication.
  *
  * @param {string|number} userId
- * @returns {Promise<{ id: string, name: string, email: string, role: string, created_at: Date }>}
+ * @returns {Promise<{ id: string, name: string, email: string, role: string, created_at: Date, permissions: object, permission_scopes: object }>}
  */
 async function getUserById(userId) {
   const { rows } = await database.query(
@@ -139,12 +148,17 @@ async function getUserById(userId) {
   }
 
   const user = rows[0];
+  const permissions = await getUserEffectivePermissions(user.role);
+  const permission_scopes = await getUserPermissionScopes(user.role);
+
   return {
     id: String(user.id),
     name: user.name,
     email: user.email,
     role: user.role,
     created_at: user.created_at,
+    permissions,
+    permission_scopes,
   };
 }
 

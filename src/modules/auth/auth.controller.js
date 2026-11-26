@@ -76,10 +76,8 @@ const login = asyncHandler(async (req, res) => {
  *   { status: "success", data: { user: { id, name, email, role, created_at } } }
  */
 const me = asyncHandler(async (req, res) => {
-  // req.user is populated by the authenticate middleware
-  const user = req.user.created_at
-    ? req.user
-    : await authService.getUserById(req.user.id);
+  // Always resolve fresh profile and effective permissions
+  const user = await authService.getUserById(req.user.id);
 
   res.status(200).json({
     status: "success",

@@ -27,6 +27,7 @@ export const ADMIN_ROLE = "ADMIN";
 export const PROTECTED_ADMIN_PERMISSIONS = [
   "edit_roles_permissions",
   "billing_security_settings",
+  "invite_members",
 ];
 
 /**
@@ -172,6 +173,35 @@ const ROLES_SCOPE_MAP = {
   "View only": "VIEW",
 };
 
+let matrixCache = null;
+let matrixCacheExpiry = 0;
+const CACHE_TTL_MS = 60 * 1000; // 60 seconds
+
+/**
+ * Invalidate the in-memory permissions cache immediately (e.g. after PATCH /team/roles).
+ */
+export function invalidateCache() {
+  matrixCache = null;
+  matrixCacheExpiry = 0;
+}
+
+/**
+ * Load the entire matrix from DB or cache.
+ * @returns {Promise<Array<{permission_id: string, admin_value: string, agent_value: string, customer_value: string}>>}
+ */
+export async function loadMatrix() {
+  const now = Date.now();
+  if (matrixCache && now < matrixCacheExpiry) {
+    return matrixCache;
+  }
+  const { rows } = await database.query(
+    "SELECT permission_id, admin_value, agent_value, customer_value FROM team_role_permissions",
+  );
+  matrixCache = rows;
+  matrixCacheExpiry = now + CACHE_TTL_MS;
+  return matrixCache;
+}
+
 /**
  * Load the stored matrix for one role. Falls back to the canonical defaults
  * per permission when the row is missing (e.g. a newly introduced permission).
@@ -179,11 +209,9 @@ const ROLES_SCOPE_MAP = {
  * @param {string} role — uppercase role (CUSTOMER/AGENT/ADMIN)
  * @returns {Promise<Map<string, string>>} permissionId → raw value
  */
-async function loadRoleValues(role) {
+export async function loadRoleValues(role) {
   const normalizedRole = String(role || "").toUpperCase();
-  const { rows } = await database.query(
-    "SELECT permission_id, admin_value, agent_value, customer_value FROM team_role_permissions",
-  );
+  const rows = await loadMatrix();
 
   const columnKey =
     normalizedRole === "ADMIN"
@@ -327,17 +355,64 @@ export function ticketInScope(scope, user, ticket) {
   return false;
 }
 
+/** Central convenience method: can(role, permission, minLevel) */
+export async function can(role, permissionId, minLevel = 1) {
+  const { level } = await resolvePermissionAccess(role, permissionId);
+  return level >= minLevel;
+}
+
+/** Central convenience method: scope(role, permission) */
+export async function scope(role, permissionId) {
+  const { scope: s } = await resolvePermissionAccess(role, permissionId);
+  return s ?? "NONE";
+}
+
+/**
+ * Return dictionary of raw permission values for a role.
+ * e.g. { create_tickets: "Allowed", view_tickets: "All tickets", ... }
+ */
+export async function getUserEffectivePermissions(role) {
+  const values = await loadRoleValues(role);
+  const result = {};
+  for (const [key, val] of values.entries()) {
+    result[key] = val;
+  }
+  return result;
+}
+
+/**
+ * Return dictionary of resolved scopes for a role.
+ * e.g. { view_tickets: "ALL", reply_tickets: "ALL", ... }
+ */
+export async function getUserPermissionScopes(role) {
+  const scopes = {};
+  for (const cfg of DEFAULT_PERMISSIONS_CONFIG) {
+    const { scope: s } = await resolvePermissionAccess(role, cfg.id);
+    if (s !== null) {
+      scopes[cfg.id] = s;
+    }
+  }
+  return scopes;
+}
+
 export default {
   ADMIN_ROLE,
   PROTECTED_ADMIN_PERMISSIONS,
   DEFAULT_PERMISSIONS_CONFIG,
   PERMISSION_IDS,
   PERMISSION_OPTIONS,
+  loadMatrix,
+  invalidateCache,
+  loadRoleValues,
   resolvePermissionAccess,
   hasPermission,
+  can,
+  scope,
   getTicketScope,
   getKbScope,
   getReportScope,
   getRolesMatrixScope,
+  getUserEffectivePermissions,
+  getUserPermissionScopes,
   ticketInScope,
 };
